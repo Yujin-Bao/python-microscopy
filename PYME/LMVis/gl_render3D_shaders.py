@@ -388,7 +388,8 @@ class LMGLShaderCanvas(GLCanvas):
             GL.glTranslatef(eye, 0.0, 0.0)
 
             # move our object to be centred at -10
-            GL.glTranslatef(0, 0, -10)
+            if self.displayMode == '3DPersp':
+                GL.glTranslatef(0, 0, -10)
 
             if not self.displayMode == '2D':
                 self.AxesOverlayLayer.render(self)
@@ -475,8 +476,13 @@ class LMGLShaderCanvas(GLCanvas):
             sc = self.GetContentScaleFactor()
         else:
             sc = 1
-    
-        GL.glViewport(0, 0, int(sc*w), int(sc*h))
+
+        #sc = 1
+
+        w = int(sc*w)
+        h = int(sc*h)
+             
+        GL.glViewport(0, 0, w, h)
         #self._accumdata = np.zeros([4,w,h], 'f')
     
         #print('bind fb')

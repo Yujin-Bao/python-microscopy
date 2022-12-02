@@ -45,7 +45,6 @@ except ImportError:
     pass
 
 import logging
-logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 logging.getLogger('matplotlib.font_manager').setLevel(logging.ERROR) #clobber unhelpful matplotlib debug messages
@@ -443,6 +442,7 @@ class MyApp(wx.App):
             if options.test:
                 # import pylab
                 im = ImageStack(np.random.randn(100,100))
+                im.pixelSize = 100
             elif options.test3d:
                 # import numpy as np
                 from scipy import ndimage
@@ -509,6 +509,7 @@ def main(argv=sys.argv[1:]):
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.DEBUG)
     main(sys.argv[1:])
 
 
