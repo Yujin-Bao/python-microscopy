@@ -6,6 +6,7 @@ Created on Sun May 16 2021
 @author: zacsimile
 """
 
+from re import T
 from PYME.Acquire.Hardware.Camera import Camera
 from PYME.Acquire.Hardware.pco import pco_sdk
 from PYME.Acquire import eventLog
@@ -20,6 +21,10 @@ import ctypes.wintypes
 import queue
 import threading
 import time
+
+import os
+from PYME.IO.FileUtils import nameUtils
+from PYME.IO.image import ImageStack
 
 k32_dll = ctypes.windll.kernel32  # lets us use the recommended WaitForSingleObject call (see pco.sdk)
                                   # instead of the not-recommended-for-polling pco_sdk.get_buffer_status()
@@ -73,6 +78,32 @@ class PcoSdkCam(Camera):
         Camera.__init__(self)
         self._initalized = False
         self.noiseProps = None
+
+        ############ aditional code for dark and flat field correction
+        self.dark = None
+        self.background = None
+        self.flatfield = None
+        self.flat = None
+
+        # load flatfield (if present)
+        #calpath = nameUtils.getCalibrationDir(self.serialNum)
+        calpath = "C:/Users/scope_baby/Desktop/Cal"
+        
+        ffname_raw = os.path.join(calpath, 'flatfield.h5')
+        if os.path.exists(ffname_raw):
+            np.save(os.path.join(calpath, 'flatfield.npy'), ImageStack(filename=ffname_raw)._data_xyztc[:,:,0,0,0])
+            ffname = os.path.join(calpath, 'flatfield.npy')
+            self.flatfield = np.load(ffname).squeeze()
+            self.flatfield = np.mean(self.flatfield)/self.flatfield
+            self.flat = self.flatfield
+
+        darkname_raw = os.path.join(calpath, 'dark.h5')
+        if os.path.exists(darkname_raw):
+            np.save(os.path.join(calpath, 'dark.npy'), ImageStack(filename=darkname_raw)._data_xyztc[:,:,0,0,0])
+            darkname = os.path.join(calpath, 'dark.npy')
+            self.dark = np.load(darkname).squeeze()
+            self.background = self.dark
+        ##############################################################
 
     def Init(self):
         self._handle = pco_sdk.open_camera()
@@ -138,6 +169,7 @@ class PcoSdkCam(Camera):
             if self._recording:
                 while not self._buffers_to_queue.empty() and (self._n_queued < MAX_QUEUED_BUFFERS):
                     i = self._buffers_to_queue.get()
+                    #print(i)
                     pco_sdk.add_buffer_extern(self._handle, self._buf_event[i], 
                                               1, 0, self._buf_addr[i], self._bufsize, 
                                               self._buf_status_addr[i])
@@ -187,6 +219,23 @@ class PcoSdkCam(Camera):
             if self._mode == self.MODE_CONTINUOUS:
                 # auto-recycle the buffer
                 self._buffers_to_queue.put(_curr_buf)
+
+        ########## aditional code for dark and flat field correction
+        if (not self.background is None) and self.background.shape == chSlice.shape:
+            #print('dark frame corrected')
+            chSlice[:] = (chSlice - np.minimum(chSlice, self.background))[:]
+            #pass
+        #else:
+        #    print('dark frame NOT corrected')
+
+        if (not self.flat is None) and self.flat.shape == chSlice.shape:
+            #print('flat field corrected')
+            chSlice[:] = (chSlice*(self.flat)).astype('uint16')[:]
+            #pass
+        #else:
+        #    print('flatfield NOT corrected')
+        
+        ###############################
         
     def GetName(self):
         return pco_sdk.get_camera_name(self._handle)
@@ -337,6 +386,13 @@ class PcoSdkCam(Camera):
         pco_sdk.set_roi(self._handle, x0, y0, x1, y1)
         self._roi = [x0, y0, x1, y1]
 
+        ########## aditional code for dark and flat field correction
+        if not self.flatfield is None:
+            self.flat = self.flatfield[(x0-1):x1, (y0-1):y1]
+        if not self.dark is None:
+            self.background = self.dark[(x0-1):x1, (y0-1):y1]
+        ###############################
+
         logger.debug('ROI set: x0 %3.1f, y0 %3.1f, w %3.1f, h %3.1f' % (x0, y0, x1-x0+1, y1-y0+1))
 
     def GetROI(self):
@@ -398,7 +454,8 @@ class PcoSdkCam(Camera):
     def _init_buffers(self):
         # Establish buffers
         lx, ly = self.GetPicWidth(), self.GetPicHeight()
-        self.SetBufferSize(int(max(int(2.0*self.GetFPS()), 1)))
+        #self.SetBufferSize(int(max(int(2.0*self.GetFPS()), 1)))
+        self.SetBufferSize(100)
         self._buffer = np.zeros((lx, ly, self._n_buffers), dtype=np.uint16)
         __buffer = self._buffer.ctypes.data_as(ctypes.c_void_p)
         self._buffer_status = np.zeros(self._n_buffers, dtype=np.uint16)
