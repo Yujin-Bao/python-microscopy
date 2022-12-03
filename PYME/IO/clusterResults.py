@@ -72,8 +72,12 @@ def pickResultsServer(filename, serverfilter=clusterIO.local_serverfilter):
         prefix = '__aggregate_txt'
     elif filename.startswith('__aggregate_h5r/'):
         fn = filename[len('__aggregate_h5r/'):]
-        fn, stub = fn.split('.h5r')
-        fn = fn  + '.h5r'
+        if '.h5r' in filename:
+            fn, stub = fn.split('.h5r')
+            fn = fn  + '.h5r'
+        else:
+            fn, stub = fn.split('.hdf')
+            fn = fn  + '.hdf'
         prefix = '__aggregate_h5r'
     else:
         fn = filename
@@ -116,7 +120,7 @@ def format_results(data_raw, URI=''):
     """
     output_format = None
     
-    if URI.endswith('.csv') or URI.endswith('.txt') or URI.endswith('.log'):
+    if URI.endswith('.csv') or URI.endswith('.txt') or URI.endswith('.log') or URI.endswith('.html'):
         output_format = 'text/csv'
         
         if isinstance(data_raw, bytes):
@@ -127,7 +131,6 @@ def format_results(data_raw, URI=''):
             import pandas as pd
             df = pd.DataFrame(data_raw)
             data = df.to_csv()
-    
     elif URI.endswith('.json'):
         output_format = 'text/json'
         if isinstance(data_raw, bytes):

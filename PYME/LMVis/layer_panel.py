@@ -10,6 +10,9 @@ from PYME.ui import histLimits
 
 import PYME.config
 
+import logging
+logger = logging.getLogger(__name__)
+
 #DisplayInvalidEvent, EVT_DISPLAY_CHANGE = wx.lib.newevent.NewCommandEvent()
 
 def CreateLayerPane(panel, visFr):
@@ -29,6 +32,8 @@ class LayerPane(afp.foldingPane):
         afp.foldingPane.__init__(self, panel, -1, caption=caption, pinned=True)
         self.visFr = visFr
         
+        self._needs_update = True
+
         self.il = wx.ImageList(16,16)
         self.il.Add(wx.ArtProvider.GetBitmap(wx.ART_PLUS, wx.ART_TOOLBAR, (16,16)))
         
@@ -65,6 +70,7 @@ class LayerPane(afp.foldingPane):
         if hasattr(panel, '_layout'):
             self.fp.fold_signal.connect(panel._layout)
         
+        self.Bind(wx.EVT_IDLE, self.on_idle)
         #self.nb.Bind(wx.EVT_NOTEBOOK_PAGE_CHANGED, self.on_page_changed)
 
     def _layout(self, *args, **kwargs):
@@ -73,7 +79,13 @@ class LayerPane(afp.foldingPane):
         self.Layout()
         self.GetParent().Layout()
 
+    def on_idle(self, evt=None):
+        if self._needs_update:
+            self._needs_update = False
+            self._update0()
+
     def update(self, *args, **kwargs):
+        #logger.debug('LayerPanel.update()')
     
         #self.nb.DeleteAllPages()
         #for p in self.pages:
@@ -84,20 +96,29 @@ class LayerPane(afp.foldingPane):
         #while (self.nb.GetPageCount() > 0):
         #    pg = self.nb.RemovePage(0)
     
+        #wx.CallAfter(self._update0)
+        self._needs_update = True
+        
+    def _update0(self):
+        #logger.debug('LayerPanel._update0()')
         for p in self.pages:
-            p.control.Close()
+            #p.control.Close()
             p.dispose()
             pass
+        self.pages = []
         
+        wx.CallAfter(self._update1)
+        
+    def _update1(self):
+        #logger.debug('LayerPanel._update1()')
         self.fp.Clear()
         
         h = 0
-    
-        self.pages = []
+        
         print('Creating layers GUI')
         for i, layer in enumerate(self.visFr.layers):
             #print(i, layer)
-            item = lfp.LayerFoldingPane(self.fp, layer=layer, caption='Layer %d' % i, pinned=False, folded=False)
+            item = lfp.LayerFoldingPane(self.fp, layer=layer, caption='Layer %d' % i, pinned=False, folded=True)
             page = layer.edit_traits(parent=item, kind='subpanel')
             item.AddNewElement(page.control)
             
@@ -129,8 +150,10 @@ class LayerPane(afp.foldingPane):
         except AttributeError:
             pass
 
-        if n_layers > 1:
+        if n_layers >= 1:
             item.Unfold()
+
+        #logger.debug('Layer panel update done')
 
     def add_layer(self, evt):
         dlg = wx.SingleChoiceDialog(self, 'Choose type of layer to add:', 'Add Layer', ['points', 'mesh', 'image', 'tracks', 'quiver'])

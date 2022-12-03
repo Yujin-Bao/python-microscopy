@@ -629,6 +629,18 @@ class BinnedHistogram(ModuleBase):
         namespace[self.outputName] = res
 
         
+# there are some measurements we don't want / are not particlarly useful (i.e. the ones which just return the image)
+# some of these changed in recent versions of skimage (2022), so try both new and old versions
+_MEASURE2D_KEYS_TO_IGNORE = ['convex_image',
+'filled_image',
+'image_convex',
+'image_filled',
+'image',
+'intensity_image',
+'image_intensity']
+
+# euler_number calculation can be buggy and cause crashes
+_MEASURE2D_KEYS_TO_IGNORE.append('euler_number')   
 
 @register_module('Measure2D') 
 class Measure2D(ModuleBase):
@@ -665,18 +677,10 @@ class Measure2D(ModuleBase):
             def addFrameMeasures(self, frameNo, measurements, contours = None):
                 if len(measurements) == 0:
                     return
+                
                 if len(self.measures) == 0:
                     #first time we've called this - determine our data type
-                    self._keys = ['t', 'x', 'y'] + [r for r in dir(measurements[0]) if not r.startswith('_')]
-                    
-                    self._keys.remove('euler_number') #buggy!
-                    
-                    # remove all the image measurements - as these will potentially generate export errors
-                    # and are not super-useful
-                    self._keys.remove('convex_image')
-                    self._keys.remove('filled_image')
-                    self._keys.remove('image')
-                    self._keys.remove('intensity_image')
+                    self._keys = ['t', 'x', 'y'] + [r for r in dir(measurements[0]) if not (r.startswith('_') or r in _MEASURE2D_KEYS_TO_IGNORE)]
                     
                     if not contours is None:
                         self._keys += ['contour']
@@ -847,6 +851,7 @@ class AddMetadataToMeasurements(ModuleBase):
     keys = CStr('SampleNotes')
     metadataKeys = CStr('Sample.Notes')
     outputName = Output('annotatedMeasurements')
+    string_length = Int(128, desc='Ammount of storage (characters) to allocate for string values')
     
     def execute(self, namespace):
         res = {}
@@ -862,7 +867,13 @@ class AddMetadataToMeasurements(ModuleBase):
                 v = os.path.split(img.seriesName)[1]
             else:
                 v = img.mdh[mdk]
-            res[k] = np.array([v]*nEntries)
+
+            if isinstance(v, str):
+                # use bytes/cstring dtype (rather than U) so that 
+                # pytables doesn't bork on us
+                res[k] = np.array([v]*nEntries, dtype='S%d'%self.string_length)
+            else:
+                res[k] = np.array([v]*nEntries)
         
         #res = pd.DataFrame(res)
         res = tabular.MappingFilter(res)
