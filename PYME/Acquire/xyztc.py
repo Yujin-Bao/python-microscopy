@@ -17,7 +17,18 @@ class XYZTCAcquisition(object):
         self.dim_order = dim_order
         self.scope = scope
         
+        self.focus_locked = self.scope.dt.is_tracking()   # determine if the focus lock has been engaged before acquisition
+        self.cropped = False                # determine if a smaller ROI has been cropped before acquisition
+        if self.scope.dt.is_tracking():
+            self.scope.dt.set_focus_lock(lock=False)           # disable focus lock
+            self.scope.dt.tick()
+            self.scope.dt.deregister()
         self.shape_x, self.shape_y = scope.frameWrangler.currentFrame.shape[:2]
+        if self.shape_x < 2048 or self.shape_y < 2048:
+            self.scope.crop()(event=0)
+            self.shape_x, self.shape_y = scope.frameWrangler.currentFrame.shape[:2]
+            self.cropped = True
+
         self.shape_z = stack_settings.GetSeqLength()
         self.shape_t = getattr(time_settings, 'num_timepoints', 1)
         self.shape_c = getattr(channel_settings, 'num_channels', 1)
@@ -82,6 +93,7 @@ class XYZTCAcquisition(object):
         
         
     def start(self):
+        self.scope.stackSettings.SetPrevPos(self.scope.stackSettings._CurPos())
         self.scope.frameWrangler.stop()
         self.frame_num = 0
         
@@ -102,7 +114,15 @@ class XYZTCAcquisition(object):
         self.scope.frameWrangler.stop()
         self.scope.frameWrangler.onFrame.disconnect(self.on_frame)
         self.scope.frameWrangler.start()
+        self.scope.stackSettings.piezoGoHome()
         
+        if self.cropped:
+            self.scope.crop()(event=0)
+            self.cropped = False
+        if self.focus_locked:
+            self.scope.dt.register()
+            self.scope.dt.set_focus_lock(lock=True)    # engage the focus lock back after finishing acquisition
+
         self.on_series_end.send(self)
         
     def _init_z(self, stack_settings):

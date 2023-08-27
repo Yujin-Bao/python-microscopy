@@ -178,11 +178,15 @@ class PcoSdkCam(Camera):
                 
                 if self._n_queued > 0:
                     _curr_buf = self._queued_buffers.get()
+                    #print(self._buf_event[_curr_buf])
                     self._n_queued -= 1
                     # wait for the buffer
                     wait_status = k32_dll.WaitForSingleObject(self._buf_event[_curr_buf], self._timeout)
+                    #print(k32_dll.WaitForSingleObject(self._buf_event[_curr_buf], 100))
+                    #print(wait_status)
                     if wait_status:
                         self._n_timeouts += 1
+                        print(self._n_timeouts)
                         if self._n_timeouts >= MAX_TIMEOUTS:
                             raise TimeoutError(f"Waited too long for buffer ({self._timeout} ms).")
                     k32_dll.ResetEvent(self._buf_event[_curr_buf])
