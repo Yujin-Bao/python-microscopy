@@ -10,6 +10,9 @@ def isosurface(data, isolevel, voxel_size=None, origin=None, remesh=False):
     from PYME.experimental import _triangle_mesh as triangle_mesh
     if not voxel_size:
         voxel_size=1.0
+
+    if not origin:
+        origin = (0,0,0)
         
     # FIXME - this has a silly memory overhead - write a better version of marching cubes
     #vertices, values = marching_cubes.image_to_vertex_values(data, voxelsize=voxel_size)
@@ -21,7 +24,7 @@ def isosurface(data, isolevel, voxel_size=None, origin=None, remesh=False):
     
     #MC = marching_cubes.RasterMarchingCubes(data, isolevel, voxelsize=voxel_size)
     MC = modified_marching_cubes.RasterMarchingCubes(data, isolevel, voxelsize=voxel_size)
-    T = triangle_mesh.TriangleMesh.from_np_stl(MC.march())
+    T = triangle_mesh.TriangleMesh.from_np_stl(MC.march(), origin=origin)
     
     if remesh:
         T.remesh()
@@ -97,7 +100,7 @@ def sdf_min(sdf, smooth=True, k=0.1):
     else:
         return np.min(sdf, axis=1)
 
-def distance_to_mesh(points, surf, smooth=True, smooth_k=0.1, tree=None):
+def distance_to_mesh(points, surf, smooth=False, smooth_k=0.1, tree=None):
     """
     Calculate the distance to a mesh from points in a tabular dataset 
 

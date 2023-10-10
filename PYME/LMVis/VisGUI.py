@@ -50,9 +50,9 @@ import logging
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
-logging.getLogger('matplotlib.font_manager').setLevel(logging.ERROR) #clobber unhelpful matplotlib debug messages
-logging.getLogger('matplotlib.backends.backend_wx').setLevel(logging.ERROR)
-logging.getLogger('PIL.PngImagePlugin').setLevel(logging.ERROR)
+# supress excessive logging from dependencies
+from PYME.util import log_verbosity
+log_verbosity.patch_log_verbosity()
 
 from PYME.ui import MetadataTree
 from PYME.recipes import recipeGui
@@ -336,13 +336,23 @@ class VisGUIFrame(AUIFrame, visCore.VisGUICore):
             self.AddPage(self.colp, caption='Colour', select=False, update=False)
             
         #print 'ev'
-        if not self.pipeline.events is None:
+        if (not self.pipeline.events is None) and (len(self.pipeline.events) > 0):
             #self.elv = eventLogViewer.eventLogPanel(self, self.pipeline.events,
             #                                            self.pipeline.mdh,
             #                                            [0, self.pipeline.selectedDataSource['tIndex'].max()])
 
             st = min(self.pipeline.events['Time'].min() - self.pipeline.mdh['StartTime'], 0)
-            et = 1.1*self.pipeline.selectedDataSource['tIndex'].max()*self.pipeline.mdh['Camera.CycleTime']
+            et = min(self.pipeline.events['Time'].max() - self.pipeline.mdh.get('EndTime', 0), 0)
+            try:
+                # try unfiltered localisations
+                et = max(et, 1.1*self.pipeline.dataSources['Localisations']['tIndex'].max()*self.pipeline.mdh['Camera.CycleTime'])
+            except (KeyError, ValueError):
+                try:
+                    #fallback if input data != 'Localisations'
+                    et = max(et, 1.1*self.pipeline.selectedDataSource['tIndex'].max()*self.pipeline.mdh['Camera.CycleTime'])
+                except (KeyError, ValueError):
+                    pass
+
             print(st, et)
             
             self.elv = eventLogViewer.eventLogTPanel(self, self.pipeline.events,self.pipeline.mdh,[st, et])
@@ -394,7 +404,7 @@ class VisGUIFrame(AUIFrame, visCore.VisGUICore):
             
         """
         
-        ID_NEWITEM = wx.NewId()
+        ID_NEWITEM = wx.NewIdRef()
         self.extras_menu.Append(ID_NEWITEM, label)
         self.Bind(wx.EVT_MENU, callback, id=ID_NEWITEM)
         

@@ -12,6 +12,9 @@ from PYME.contrib import dispatch
 
 from OpenGL.GL import *
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 class WireframeEngine(BaseEngine):
     _outlines = True
@@ -23,13 +26,17 @@ class WireframeEngine(BaseEngine):
     def render(self, gl_canvas, layer):
         self._set_shader_clipping(gl_canvas)
 
+        vertices = layer.get_vertices()
+        n_vertices = vertices.shape[0]
+
+        if n_vertices == 0:
+            logger.warning('Layer (%s) has no vertices to render' % layer)
+            return
+
+        normals = layer.get_normals()
+        colors = layer.get_colors()
+
         with self.get_shader_program(gl_canvas):
-            vertices = layer.get_vertices()
-            n_vertices = vertices.shape[0]
-
-            normals = layer.get_normals()
-            colors = layer.get_colors()
-
             glVertexPointerf(vertices)
             glNormalPointerf(normals)
             glColorPointerf(colors)
@@ -206,6 +213,7 @@ class TriangleRenderLayer(EngineLayer):
     def _get_cdata(self):
         try:
             cdata = self.datasource[self.vertexColour]
+            cdata = cdata[self.datasource._vertices['halfedge']!= -1]
         except (KeyError, TypeError):
             cdata = np.array([0, 1])
 
@@ -230,7 +238,7 @@ class TriangleRenderLayer(EngineLayer):
             self._datasource_keys = dks
         
         if not (self.engine is None or self.datasource is None):
-            print('lw update')
+            print('mesh_layer update')
             self.update_from_datasource(self.datasource)
             self.on_update.send(self)
 

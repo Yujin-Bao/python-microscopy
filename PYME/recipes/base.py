@@ -9,7 +9,7 @@ Created on Mon May 25 17:02:04 2015
 #import wx
 import six
 
-from PYME.recipes.traits import HasTraits, Float, List, Bool, Int, CStr, Enum, File, on_trait_change, Input, Output
+from PYME.recipes.traits import HasTraits, HasStrictTraits, Float, List, Bool, Int, CStr, Enum, File, on_trait_change, Input, Output, Instance, WeakRef
     
 #for some reason traitsui raises SystemExit when called from sphinx on OSX
 #This is due to the framework build problem of anaconda on OSX, and also
@@ -24,24 +24,65 @@ from PYME.recipes.traits import HasTraits, Float, List, Bool, Int, CStr, Enum, F
 
 from PYME.IO.image import ImageStack
 import numpy as np
+from PYME import config
+
+try:
+    import dask.array as da
+except ImportError:
+    da = None
 
 import logging
 logger = logging.getLogger(__name__)
+
+import yaml
+class MyDumper(yaml.SafeDumper):
+            def represent_mapping(self, tag, value, flow_style=None):
+                return super(MyDumper, self).represent_mapping(tag, value, False)
 
 # TODO - move to recipe.py?
 all_modules = {}
 _legacy_modules = {}
 module_names = {}
 
-def register_module(moduleName):
+def register_module(moduleName, prefix=None):
+    """
+    Register a module so that it is discoverable by the recipe architecture
+    
+    Recipe module prefixes are treated slightly differently depending on whether it is a PYME internal
+    recipe, or comes from an external module. For PYME-internal recipe modules, their prefix is the name
+    of the (python) module in which the recipe is defined. For external (plugin) recipe modules, it is
+    the name of the python **package** which contains the recipe module - a plugin may define multiple 
+    recipes in different files, but they will all be accessible using the package prefix. This is a change 
+    from previous behaviour where the most proximal module name was used in plugin derived modules (similar 
+    to internal recipe modules). This change was made to a) decrease the chance of collisions, where plugin
+    modules shadowed exisiting internal recipe modules and b) make module provenance (is this an internal
+    or plugin-derived module) clear to assist debugging.
+
+    If the plugin package name is not sufficiently distinctive, or happens to shadow any of the internal
+    PYME recipe module names, plugin authors have the opportuntiy to specify their own prefix as a second 
+    argument to register_module. If taking this route, the prefix should be an identifier of the 
+    group/individual maintaining the plugin - e.g. baddeleylab. 
+    """
     def c_decorate(cls):
-        py_module = cls.__module__.split('.')[-1]
-        full_module_name = '.'.join([py_module, moduleName])
+        if not prefix:
+            top_level_mod = cls.__module__.split('.')[0]
+            py_module = cls.__module__.split('.')[-1]
+
+            if top_level_mod == 'PYME':
+                prefix_ = py_module
+            else:
+                prefix_ = top_level_mod
+        else:
+            prefix_ = prefix
+        
+        full_module_name = '.'.join([prefix_, moduleName])
 
         all_modules[full_module_name] = cls
         _legacy_modules[moduleName] = cls #allow acces by non-hierarchical names for backwards compatibility
 
         module_names[cls] = full_module_name
+        cls._module_name = full_module_name
+        cls._short_name = moduleName # for use in metadata generation
         return cls
         
     return c_decorate
@@ -60,6 +101,8 @@ def register_legacy_module(moduleName, py_module=None):
         _legacy_modules[full_module_name] = cls
         _legacy_modules[moduleName] = cls #allow access by non-hierarchical names for backwards compatibility
 
+        cls._module_name = full_module_name
+
         #module_names[cls] = full_module_name
         return cls
 
@@ -70,7 +113,7 @@ class MissingInputError(Exception):
     pass
 
 
-class ModuleBase(HasTraits):
+class ModuleBase(HasStrictTraits):
     """
     Recipe modules represent a "functional" processing block, the effects of which depend solely on its
     inputs and parameters. They read a number of named inputs from the recipe namespace and write the
@@ -83,7 +126,13 @@ class ModuleBase(HasTraits):
     
     If you want side effects - e.g. saving something to disk, look at the OutputModule class.
     """
-    _invalidate_parent = True
+    _invalidate_parent = Bool(True)
+    _parent=WeakRef(object, allow_none=True)
+
+    _initial_set = Bool(False)
+    _success = Bool(False)
+    _last_error = Instance(object)
+
     
     def __init__(self, parent=None, invalidate_parent = True, **kwargs):
         self._parent = parent
@@ -130,7 +179,7 @@ class ModuleBase(HasTraits):
             # don't trigger on private variables
             return
         
-        if self._invalidate_parent and not self.__dict__.get('_parent', None) is None:
+        if self._invalidate_parent and not self._parent is None:
             #print('invalidating')
             self._parent.prune_dependencies_from_namespace(self.outputs)
             
@@ -148,6 +197,31 @@ class ModuleBase(HasTraits):
         if len(self.outputs) == 0:
             raise RuntimeError('Module should define at least one output.')
         
+    def cleaned_dict_repr(self):
+        ct = self.class_traits()
+            
+        mod_traits_cleaned = {}
+        for k, v in self.get().items():
+            if not k.startswith('_'): #don't save private data - this is usually used for caching etc ..,
+                try:
+                    if (not (v == ct[k].default)) or (k.startswith('input')) or (k.startswith('output')) or isinstance(ct[k], (Input, Output)):
+                        #don't save defaults
+                        if isinstance(v, dict) and not type(v) == dict:
+                            v = dict(v)
+                        elif isinstance(v, list) and not type(v) == list:
+                            v = list(v)
+                        elif isinstance(v, set) and not type(v) == set:
+                            v = set(v)
+                        
+                        mod_traits_cleaned[k] = v
+                except KeyError:
+                    # for some reason we have a trait that shouldn't be here
+                    pass
+        return {module_names[self.__class__]: mod_traits_cleaned}
+
+    def toYAML(self):
+        return yaml.dump(self.cleaned_dict_repr(), Dumper=MyDumper)
+
     def check_inputs(self, namespace):
         """
         Checks that module inputs are present in namespace, raising an exception if they are missing. Existing to simplify
@@ -172,12 +246,54 @@ class ModuleBase(HasTraits):
         return np.all([op in keys for op in self.outputs])
 
     def execute(self, namespace):
-        """prototype function - should be over-ridden in derived classes
-
+        """
         takes a namespace (a dictionary like object) from which it reads its inputs and
         into which it writes outputs
+
+        NOTE: This was previously the function to define / override to make a module work. To support automatic metadata propagation
+        and reduce the ammount of boiler plate, new modules should override the `run()` method instead.
         """
-        pass
+        from PYME.IO import MetaDataHandler
+        inputs = {k: namespace[v] for k, v in self._input_traits.items()}
+
+        ret = self.run(**inputs)
+
+        # convert output to a dictionary if needed
+        if isinstance(ret, dict):
+            out = {k : ret[v] for v, k in self._output_traits.items()}
+        elif isinstance(ret, List):
+            out = {k : v  for k, v in zip(self.outputs, ret)} #TODO - is this safe (is ordering consistent)
+        else:
+            # single output
+            if len(self.outputs) > 1:
+                raise RuntimeError('Module has multiple outputs, but .run() returns a single value')
+
+            out = {list(self.outputs)[0] : ret}
+
+        # complete metadata (injecting as appropriate)
+        mdhin = MetaDataHandler.DictMDHandler(getattr(list(inputs.values())[0], 'mdh', None))
+        
+        mdh = MetaDataHandler.DictMDHandler()
+        self._params_to_metadata(mdh)
+
+        for v in out.values():
+            if getattr(v, 'mdh', None) is None:
+                v.mdh = MetaDataHandler.DictMDHandler()
+
+            v.mdh.mergeEntriesFrom(mdhin) #merge, to allow e.g. voxel size overrides due to downsampling
+            #print(v.mdh, mdh)
+            v.mdh.copyEntriesFrom(mdh) # copy / overwrite with module processing parameters
+
+        namespace.update(out)
+
+    def run(self, **kwargs):
+        """
+        OVERRIDE THIS in derived classes to implement module functionality. Parameters are passed in by keyword, and keyword names must
+        be a 1:1 match to the module input traits.
+        
+        The function should return either a dict (multiple outputs, keyed with output trait keys), or
+        """
+        raise NotImplementedError
     
     def apply(self, *args, **kwargs):
         """
@@ -244,11 +360,17 @@ class ModuleBase(HasTraits):
         -------
         set of input names
         """
-        return {v for k, v in self.trait_get().items() if (k.startswith('input') or isinstance(k, Input)) and not v == ''}
+        #return {v for k, v in self.trait_get().items() if (k.startswith('input') or isinstance(k, Input)) and not v == ''}
+        return set(self._input_traits.values())
+
+    @property
+    def _input_traits(self): 
+        return {k:getattr(self,k) for k, v in self.traits().items() if (k.startswith('input') or isinstance(v.trait_type, Input)) and not getattr(self, k) == ''}
 
     @property
     def _output_traits(self):
-        return {k:v for k, v in self.trait_get().items() if (k.startswith('output') or isinstance(k, Output)) and not v ==''}
+        #return {k:v for k, v in self.trait_get().items() if (k.startswith('output') or isinstance(k, Output)) and not v ==''}
+        return {k:getattr(self,k) for k, v in self.traits().items() if (isinstance(v.trait_type, Output)) and not getattr(self, k) == ''}
     
     @property
     def outputs(self):
@@ -324,12 +446,32 @@ class ModuleBase(HasTraits):
         return []
     
     def get_params(self):
+        t = self.traits()
         editable = self.class_editable_traits()
-        inputs = [tn for tn in editable if tn.startswith('input')]
-        outputs = [tn for tn in editable if tn.startswith('output')]
+        inputs = [tn for tn in editable if (tn.startswith('input') or isinstance(t[tn].trait_type, Input))]
+        outputs = [tn for tn in editable if (tn.startswith('output') or isinstance(t[tn].trait_type, Output))]
         params = [tn for tn in editable if not (tn in inputs or tn in outputs or tn.startswith('_'))]
         
         return inputs, outputs, params
+
+    def _params_to_metadata(self, mdh):
+        """
+        Automatically populate metadata with module parameters
+
+        This currently gets called manually in a few modules ...
+
+        TODO - make this automatic.
+        TODO? - resolve ambiguities when the same module appears twice in a recipe (the metadata 
+        will currently reflect the settings of the last module to operate on the data). In practice,
+        probably best addressed by simply saving the whole recipe into the metadata in the output module
+        and then not worrying about the metadata entries saved by individual modules.
+        """
+        _, _, params = self.get_params()
+
+        for p in params:
+            p_name = ''.join([s.capitalize() for s in p.split('_')]) #convert to camel case to follow metadata conventions
+            mdh[f'Processing.{self._short_name}.{p_name}'] = getattr(self, p)
+
         
     def _pipeline_view(self, show_label=True):
         import wx
@@ -596,6 +738,15 @@ class Filter(ImageModuleBase):
     """Module with one image input and one image output"""
     inputName = Input('input')
     outputName = Output('filtered_image')
+
+    # flag which can be set to false in derived classes (e.g. Projection, Zoom)
+    # which (in their current forms) will behave badly if run blocked
+    _block_safe = True 
+
+    def _block_overlap(self):
+        # override in derrived classes to specify desired overlap between blocks
+        # this should generally be a few times the kernel width for filtering ops.
+        return None
     
     def output_shapes(self, input_shapes):
         """What shape is the output (without running any computation)
@@ -634,6 +785,51 @@ class Filter(ImageModuleBase):
         self.completeMetadata(im)
         
         return im
+
+    def _chunk_dims(self, chunksize):
+        chunksize = np.array(chunksize)
+        logger.debug('chunksize: %s' % chunksize)
+
+        # flatten last dimensions
+        if (self.dimensionality == 'XY'):
+            chunksize[2:] = 1
+        elif (self.dimensionality == 'XYZ'):
+            if (chunksize[2] == 1):
+                logger.warning('XYZ dimensionality chosen, but z chunk size is 1')
+            chunksize[3:] = 1
+        elif (self.dimensionality == 'XYZT'):
+            if (chunksize[2] == 1):
+                logger.warning('XYZT dimensionality chosen, but z chunk size is 1')
+            if (chunksize[2] == 1):
+                logger.warning('XYZT dimensionality chosen, but t chunk size is 1')
+
+        return tuple(chunksize)
+    
+    def dfilter(self, image, chunksize=None):
+        from PYME.IO.DataSources import ArrayDataSource
+        
+        if not chunksize:
+            # chunksize not specified, infer 
+            # Use input chunck size (if chunked), otherwise a single, large chunk 
+            chunksize = getattr(image.data_xyztc, 'chunksize', tuple(image.data_xyztc.shape))
+
+        chunksize = self._chunk_dims(chunksize)
+
+        c_image = da.from_array(image.data_xyztc, chunks = chunksize)
+        #NB - map_overlap reduces to map_chunks if depth is None (or 0)  - the default case
+        out = c_image.map_overlap(self.__apply_filter, depth=self._block_overlap(), voxelsize=image.voxelsize, dtype='f')      
+        
+        im = ImageStack(ArrayDataSource.XYZTCArrayDataSource(out), titleStub = self.outputName)
+        im.mdh.copyEntriesFrom(image.mdh)
+        im.mdh['Parent'] = image.filename
+        
+        self.completeMetadata(im)
+        
+        return im
+
+    def __apply_filter(self, data, voxelsize):
+        d2 = np.array(data, copy=False).squeeze().astype('f')
+        return  np.array(self.apply_filter(d2,voxelsize), copy=False, ndmin=5)
     
     def _apply_filter(self, data, image, z=None, t=None, c=None):
         if hasattr(self, 'applyFilter'):
@@ -646,8 +842,14 @@ class Filter(ImageModuleBase):
     def apply_filter(self, data, voxelsize):
         raise NotImplementedError('Should be over-ridden in derived class')
         
-    def execute(self, namespace):
-        namespace[self.outputName] = self.filter(namespace[self.inputName])
+    # def execute(self, namespace):
+    #     namespace[self.outputName] = self.filter(namespace[self.inputName])
+    
+    def run(self, inputName):
+        if da and config.get('recipes-use_dask', False):
+            return self.dfilter(inputName)
+        else:
+            return self.filter(inputName)
         
     def completeMetadata(self, im):
         pass
@@ -723,8 +925,11 @@ class ArithmaticFilter(ModuleBase):
         
         return im
         
-    def execute(self, namespace):
-        namespace[self.outputName] = self.filter(namespace[self.inputName0], namespace[self.inputName1])
+    #def execute(self, namespace):
+    #    namespace[self.outputName] = self.filter(namespace[self.inputName0], namespace[self.inputName1])
+
+    def run(self, inputName0, inputName1):
+        return self.filter(inputName0, inputName1)
         
     def completeMetadata(self, im):
         pass  
@@ -752,8 +957,11 @@ class ExtractChannel(ModuleBase):
         
         return im
     
-    def execute(self, namespace):
-        namespace[self.outputName] = self._pickChannel(namespace[self.inputName])
+    #def execute(self, namespace):
+    #    namespace[self.outputName] = self._pickChannel(namespace[self.inputName])
+
+    def run(self, inputName):
+        return self._pickChannel(inputName)
 
 
 @register_module('JoinChannels')    
@@ -767,34 +975,53 @@ class JoinChannels(ModuleBase):
     
     #channelToExtract = Int(0)
     
-    def _joinChannels(self, namespace):
-        chans = []
+    # def _joinChannels(self, namespace):
+    #     chans = []
 
-        image = namespace[self.inputChan0]        
+    #     image = namespace[self.inputChan0]        
         
-        chans.append(np.atleast_3d(image.data[:,:,:,0]))
+    #     chans.append(np.atleast_3d(image.data[:,:,:,0]))
         
-        channel_names = [self.inputChan0,]
+    #     channel_names = [self.inputChan0,]
         
-        if not self.inputChan1 == '':
-            chans.append(namespace[self.inputChan1].data[:,:,:,0])
-            channel_names.append(self.inputChan1)
-        if not self.inputChan2 == '':
-            chans.append(namespace[self.inputChan2].data[:,:,:,0])
-            channel_names.append(self.inputChan2)
-        if not self.inputChan3 == '':
-            chans.append(namespace[self.inputChan3].data[:,:,:,0])
-            channel_names.append(self.inputChan3)
+    #     if not self.inputChan1 == '':
+    #         chans.append(namespace[self.inputChan1].data[:,:,:,0])
+    #         channel_names.append(self.inputChan1)
+    #     if not self.inputChan2 == '':
+    #         chans.append(namespace[self.inputChan2].data[:,:,:,0])
+    #         channel_names.append(self.inputChan2)
+    #     if not self.inputChan3 == '':
+    #         chans.append(namespace[self.inputChan3].data[:,:,:,0])
+    #         channel_names.append(self.inputChan3)
         
-        im = ImageStack(chans, titleStub = 'Composite Image')
-        im.mdh.copyEntriesFrom(image.mdh)
-        im.names = channel_names
-        im.mdh['Parent'] = image.filename
+    #     im = ImageStack(chans, titleStub = 'Composite Image')
+    #     im.mdh.copyEntriesFrom(image.mdh)
+    #     im.names = channel_names
+    #     im.mdh['Parent'] = image.filename
         
-        return im
+    #     return im
     
-    def execute(self, namespace):
-        namespace[self.outputName] = self._joinChannels(namespace)
+    # def execute(self, namespace):
+    #     #TODO - make convert to .run() (and find a way of handling variable inputs)
+    #     namespace[self.outputName] = self._joinChannels(namespace)
+
+    def run(self, inputChan0, inputChan1, inputChan2=None, inputChan3=None):
+        chans = [] 
+        channel_names = []      
+
+        for i, c in enumerate([inputChan0, inputChan1, inputChan2, inputChan3]):
+            if c:
+                chans.append(np.atleast_3d(c.data_xyztc[:,:,:,:,0])) #FIXME .... so as not to drag everything into memory if not needed
+                channel_names.append(getattr(self, 'inputChan%d' %i))
+
+        im = ImageStack(chans, titleStub = 'Composite Image')
+        im.mdh.copyEntriesFrom(inputChan0.mdh)
+        im.names = channel_names
+        im.mdh['Parent'] = inputChan0.filename
+
+        return im
+
+
 
 
 @register_module('Add')    
@@ -999,12 +1226,16 @@ class Crop(ModuleBase):
     t_range = List(Int)([0, -1])
     output = Output('cropped')
 
-    def execute(self, namespace):
-        from PYME.IO.DataSources.CropDataSource import crop_image
+    # def execute(self, namespace):
+    #     from PYME.IO.DataSources.CropDataSource import crop_image
 
-        im = namespace[self.input]
-        cropped = crop_image(im, xrange=slice(*self.x_range), yrange=slice(*self.y_range), zrange=slice(*self.z_range), trange=slice(*self.t_range))
-        namespace[self.output] = cropped
+    #     im = namespace[self.input]
+    #     cropped = crop_image(im, xrange=slice(*self.x_range), yrange=slice(*self.y_range), zrange=slice(*self.z_range), trange=slice(*self.t_range))
+    #     namespace[self.output] = cropped
+
+    def run(self, input):
+        from PYME.IO.DataSources.CropDataSource import crop_image
+        return crop_image(input, xrange=slice(*self.x_range), yrange=slice(*self.y_range), zrange=slice(*self.z_range), trange=slice(*self.t_range))
 
 
 @register_module('Redimension')
@@ -1018,7 +1249,7 @@ class Redimension(ModuleBase):
     the given dimention ordering.
 
     Parameters
-    -----------
+    ----------
 
     dim_order : enum, the order of dimensions in the image sequence
     size_z : int, number of z slices
@@ -1042,16 +1273,25 @@ class Redimension(ModuleBase):
     size_t = Int(1)
     size_c = Int(1)
 
-    def execute(self, namespace):
+    # def execute(self, namespace):
+    #     from PYME.IO.image import ImageStack
+    #     from PYME.IO.DataSources.BaseDataSource import XYZTCWrapper
+
+    #     im = namespace[self.input]
+
+    #     d = XYZTCWrapper(im.data_xyztc)
+    #     d.set_dim_order_and_size(self.dim_order, size_z=self.size_z,size_t=self.size_t, size_c=self.size_c)
+    #     im = ImageStack(data=d, titleStub='Redimensioned')
+        
+    #     im.mdh.copyEntriesFrom(getattr(im, 'mdh', {})) 
+
+    #     namespace[self.output] = d
+
+    def run(self, input):
         from PYME.IO.image import ImageStack
         from PYME.IO.DataSources.BaseDataSource import XYZTCWrapper
 
-        im = namespace[self.input]
-
-        d = XYZTCWrapper(im.data_xyztc)
+        d = XYZTCWrapper(input.data_xyztc)
         d.set_dim_order_and_size(self.dim_order, size_z=self.size_z,size_t=self.size_t, size_c=self.size_c)
-        im = ImageStack(data=d, titleStub='Redimensioned')
-        
-        im.mdh.copyEntriesFrom(getattr(im, 'mdh', {})) 
-
-        namespace[self.output] = d
+        return ImageStack(data=d, titleStub='Redimensioned')
+    

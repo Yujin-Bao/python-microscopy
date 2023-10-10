@@ -1,5 +1,5 @@
 from traitsui.wx.editor import Editor
-from traitsui.wx.basic_editor_factory import BasicEditorFactory
+from traitsui.basic_editor_factory import BasicEditorFactory
 
 from PYME.recipes.traits import List, Instance
 
@@ -97,9 +97,16 @@ class _FilterEditor (Editor):
         return
     
     def dispose(self):
-        self.control = None
-
+        from PYME.recipes.vertical_recipe_display import _popEventHandlers
+        #TODO - move the above somewhere sensible - e.g. PYME.ui
         print('Disposing of FilterEditor')
+        #self.control.unbind_events() # unbind all events
+        _popEventHandlers(self.control)
+        print(self.control, self.control.GetEventHandler())
+        self.control.lFiltKeys.SetEventHandler(self.control.lFiltKeys) 
+        print(self.control.lFiltKeys, self.control.lFiltKeys.GetEventHandler())
+        
+        self.control = None
 
         super(Editor, self).dispose()
 
@@ -190,9 +197,9 @@ class DictChoiceStrPanel(wx.Panel):
 
         # only do this part the first time so the events are only bound once
         if not hasattr(self, "ID_FILT_ADD"):
-            self.ID_FILT_ADD = wx.NewId()
-            self.ID_FILT_DELETE = wx.NewId()
-            self.ID_FILT_EDIT = wx.NewId()
+            self.ID_FILT_ADD = wx.NewIdRef()
+            self.ID_FILT_DELETE = wx.NewIdRef()
+            self.ID_FILT_EDIT = wx.NewIdRef()
 
             self.Bind(wx.EVT_MENU, self.OnFilterAdd, id=self.ID_FILT_ADD)
             self.Bind(wx.EVT_MENU, self.OnFilterDelete, id=self.ID_FILT_DELETE)
@@ -472,7 +479,7 @@ class _HistLimitsEditor (Editor):
         """
         import traceback
         print('hl update')
-        #print traceback.print_stack()
+        #print(traceback.print_stack())
         if self.value:
             self.control.SetData(self.factory.data(), *self.value)
             self.control.SetValue(self.value)

@@ -74,12 +74,11 @@ name = 'ball_glut'
 
 from . import views
 from PYME.contrib import dispatch
+from PYME.ui import selection
 
-
-class SelectionSettings(object):
+class SelectionSettings(selection.Selection):
     def __init__(self):
-        self.start = (0, 0)
-        self.finish = (0, 0)
+        selection.Selection.__init__(self)
         self.colour = [1, 1, 0]
         self.show = False
 
@@ -388,7 +387,8 @@ class LMGLShaderCanvas(GLCanvas):
             GL.glTranslatef(eye, 0.0, 0.0)
 
             # move our object to be centred at -10
-            GL.glTranslatef(0, 0, -10)
+            if self.displayMode == '3DPersp':
+                GL.glTranslatef(0, 0, -10)
 
             if not self.displayMode == '2D':
                 self.AxesOverlayLayer.render(self)
@@ -475,8 +475,13 @@ class LMGLShaderCanvas(GLCanvas):
             sc = self.GetContentScaleFactor()
         else:
             sc = 1
-    
-        GL.glViewport(0, 0, int(sc*w), int(sc*h))
+
+        #sc = 1
+
+        w = int(sc*w)
+        h = int(sc*h)
+             
+        GL.glViewport(0, 0, w, h)
         #self._accumdata = np.zeros([4,w,h], 'f')
     
         #print('bind fb')
@@ -782,8 +787,10 @@ class LMGLShaderCanvas(GLCanvas):
             self.selectionDragging = True
             self.selectionSettings.show = True
 
-            self.selectionSettings.start = (xp, yp)
-            self.selectionSettings.finish = (xp, yp)
+            self.selectionSettings.start = (xp, yp, None)
+            self.selectionSettings.finish = (xp, yp, None)
+            self.selectionSettings.trace.clear()
+            self.selectionSettings.trace.append((xp, yp))
 
         event.Skip()
 
@@ -793,7 +800,8 @@ class LMGLShaderCanvas(GLCanvas):
         if self.selectionDragging:
             xp, yp = self._ScreenCoordinatesToNm(event.GetX(), event.GetY())
 
-            self.selectionSettings.finish = (xp, yp)
+            self.selectionSettings.finish = (xp, yp, None)
+            self.selectionSettings.trace.append((xp, yp))
             self.selectionDragging = False
 
             self.Refresh()
@@ -825,7 +833,9 @@ class LMGLShaderCanvas(GLCanvas):
         y = event.GetY()
 
         if self.selectionDragging:
-            self.selectionSettings.finish = self._ScreenCoordinatesToNm(x, y)
+            sx, sy = self._ScreenCoordinatesToNm(x, y)
+            self.selectionSettings.finish = (sx, sy, None)
+            self.selectionSettings.trace.append((sx, sy))
             self.Refresh()
             event.Skip()
 
@@ -930,7 +940,13 @@ class LMGLShaderCanvas(GLCanvas):
         #     raise RuntimeError('{} is not a supported format.'.format(mode))
         # img.show()
         self.on_screen = False
-        off_screen_handler = OffScreenHandler(self.view_port_size, mode, self._num_antialias_samples)
+        vmajor, vminor = wx.VERSION[:2]
+        if (vmajor >= 4) and (vminor >= 1):
+            sc = self.GetContentScaleFactor()
+        else:
+            sc = 1
+        view_port_size = (int(self.view_port_size[0]*sc), int(self.view_port_size[1]*sc))
+        off_screen_handler = OffScreenHandler(view_port_size, mode, self._num_antialias_samples)
         with off_screen_handler:
             self.OnDraw()
         snap = off_screen_handler.get_snap()
@@ -966,6 +982,9 @@ class LMGLShaderCanvas(GLCanvas):
                 
                     self.setView(x0, x0 + self.view_port_size[0]*pixel_size,
                             y0, y0 + self.view_port_size[1]*pixel_size)
+                    
+                    #enforce top-down view (2D)
+                    self.view.top()
 
                     print(pixel_size, self.pixelsize)
                     assert(self.pixelsize == pixel_size)

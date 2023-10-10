@@ -41,6 +41,9 @@ def main():
     op.add_argument('-p', '--port', dest='port', default=conf.get('nodeserver-port', 15347), type=int,
                     help="port number to serve on (default: 15347, see also 'nodeserver-port' config entry)")
 
+    op.add_argument('-n', '--num-workers', dest='num_workers', default=conf.get('nodeserver-num_workers', cpu_count()), type=int,
+                    help="number of worker processes to run - default: num cpu cores")
+    
     op.add_argument('-a', '--advertisements', dest='advertisements', choices=['zeroconf', 'local'], default='zeroconf',
                     help='Optionally restrict advertisements to local machine')
 
@@ -58,8 +61,8 @@ def main():
         externalAddr = '127.0.0.1' #bind to localhost
     
     #TODO - move this into the nodeserver proper so that the ruleserver doesn't need to be up before we start
-    print(distribution.getDistributorInfo(ns).values())
-    distributors = [u.lstrip('http://').rstrip('/') for u in distribution.getDistributorInfo(ns).values()]
+    #print(distribution.getDistributorInfo(ns).values())
+    #distributors = [u.lstrip('http://').rstrip('/') for u in distribution.getDistributorInfo(ns).values()]
     
     #set up nodeserver logging
     cluster_root = conf.get('dataserver-root')
@@ -97,7 +100,7 @@ def main():
         nodeserverLog = logger
 
 
-    proc = rulenodeserver.ServerThread(distributors[0], serverPort, externalAddr=externalAddr, profile=False)
+    proc = rulenodeserver.ServerThread(ns, serverPort, externalAddr=externalAddr, profile=False)
     proc.start()
         
     # TODO - do we need this advertisement
@@ -109,8 +112,10 @@ def main():
     ns.register_service(service_name, externalAddr, serverPort)
 
     time.sleep(2)
+    nodeserverLog.debug('Nodeserver on port: %d' % serverPort)
     nodeserverLog.debug('Launching worker processors')
-    numWorkers = conf.get('nodeserver-num_workers', cpu_count())
+    #numWorkers = conf.get('nodeserver-num_workers', cpu_count())
+    numWorkers = args.num_workers
 
     workerProcs = [subprocess.Popen('"%s" -m PYME.cluster.taskWorkerHTTP -s %d' % (sys.executable, serverPort), shell=True, stdin=subprocess.PIPE)
                    for i in range(numWorkers -1)]
@@ -123,6 +128,19 @@ def main():
     try:
         while proc.is_alive():
             time.sleep(1)
+
+            dead_workers = []
+            for p in workerProcs:
+                r = p.poll()
+                if r is not None:
+                    logger.error('Worker process (%d) has died' % p.pid)
+                    dead_workers.append(p)
+
+            # cleanup and respawn
+            for p in dead_workers:        
+                workerProcs.remove(p)
+                logger.debug('Spawning replacement worker')
+                workerProcs.append(subprocess.Popen('"%s" -m PYME.cluster.taskWorkerHTTP -s %d' % (sys.executable, serverPort), shell=True, stdin=subprocess.PIPE))
 
     finally:
         logger.info('Shutting down workers')

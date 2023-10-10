@@ -31,8 +31,10 @@ import os
 LimitChangeEvent, EVT_LIMIT_CHANGE = wx.lib.newevent.NewCommandEvent()
 
 class HistLimitPanel(wx.Panel):
-    def __init__(self, parent, id, data, limit_lower, limit_upper, log=False, size =(200, 100), pos=(0,0), threshMode= False):
-        wx.Panel.__init__(self, parent, id, size=size, pos=pos, style=wx.BORDER_SUNKEN)
+    def __init__(self, parent, wx_id, data, limit_lower, limit_upper, log=False, size =(200, 100), pos=(0,0), threshMode= False):
+        wx.Panel.__init__(self, parent, wx_id, size=size, pos=pos, style=wx.BORDER_SUNKEN)
+
+        self._data_id = id(data)
 
         self.data = data.ravel()
         self.data = self.data[np.isfinite(self.data)]
@@ -42,14 +44,23 @@ class HistLimitPanel(wx.Panel):
         
         dSort = np.argsort(self.data)
         
-        self.upper_pctile = float(self.data[dSort[int(len(self.data)*.99)]])
-        self.lower_pctile = float(self.data[dSort[int(len(self.data)*.01)]])
+        if len(self.data) == 0:
+            # special case - we have no data
+            self.upper_pctile = 1
+            self.lower_pctile = 0
+            self.dmin, self.dmax = 0,1
+        else:
+        
+            self.upper_pctile = float(self.data[dSort[int(len(self.data)*.99)]])
+            self.lower_pctile = float(self.data[dSort[int(len(self.data)*.01)]])
 
-        self.dmin = self.data[dSort[0]]
-        self.dmax = self.data[dSort[-1]]
+            self.dmin = self.data[dSort[0]]
+            self.dmax = self.data[dSort[-1]]
 
         self.limit_lower = float(limit_lower)
         self.limit_upper = float(limit_upper)
+
+        self.SetBackgroundColour(wx.WHITE)
 
         self.textSize = 10
         self.log = log
@@ -91,6 +102,12 @@ class HistLimitPanel(wx.Panel):
         self.ProcessEvent(evt)
 
     def SetData(self, data, lower, upper):
+        if (id(data) == self._data_id) and (self.limit_lower == lower) and (self.limit_upper == upper):
+            # called with the data and limits we already have, no need to do anything
+            # this prevents histogram recalculation if we just, e.g., change the LUT
+            return
+
+        self._data_id = id(data)
         self.data = np.array(data).ravel()
         self.data = self.data[np.isfinite(self.data)]
 
@@ -227,6 +244,9 @@ class HistLimitPanel(wx.Panel):
         pointlist = [(i,h_i) for i, h_i in zip(range(len(h)), h)]
         pointlist = [(0,maxy)] + pointlist + [(self.Size[0], maxy)]
 
+        #self.SetBackgroundMode(wx.SOLID)
+        #dc.SetBackgroundMode(wx.BRUSHSTYLE_SOLID)
+        dc.SetBackground(wx.Brush(self.GetBackgroundColour()))
         dc.Clear()
 
         #when being used to determine histogram bins
@@ -421,7 +441,7 @@ class HistLimitEditDialog(wx.Dialog):
 
         sizer2.Add(self.tMax, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
 
-        sizer1.Add(sizer2, 0, wx.ALIGN_CENTER_VERTICAL|wx.ALL, 5)    
+        sizer1.Add(sizer2, 0, wx.ALL, 5)    
         
         btSizer = wx.StdDialogButtonSizer()
 
@@ -436,7 +456,7 @@ class HistLimitEditDialog(wx.Dialog):
 
         btSizer.Realize()
 
-        sizer1.Add(btSizer, 0, wx.ALIGN_RIGHT|wx.ALIGN_CENTER_VERTICAL|wx.ALL, 5)
+        sizer1.Add(btSizer, 0, wx.ALIGN_RIGHT|wx.ALL, 5)
 
         self.SetSizer(sizer1)
         sizer1.Fit(self)
@@ -444,7 +464,7 @@ class HistLimitEditDialog(wx.Dialog):
 
 def ShowHistLimitFrame(parent, title, data, limit_lower, limit_upper, size=(200, 100), log=False):
     f = wx.Frame(parent, title=title, size=size)
-    ID_HIST_LIM = wx.NewId()
+    ID_HIST_LIM = wx.NewIdRef()
     p = HistLimitPanel(f, ID_HIST_LIM, data, limit_lower, limit_upper, log=log)
     f.Show()
     return ID_HIST_LIM

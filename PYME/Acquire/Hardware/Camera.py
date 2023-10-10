@@ -115,6 +115,7 @@ class Camera(object):
     MODE_CONTINUOUS = 1
     MODE_SOFTWARE_TRIGGER = 2
     MODE_HARDWARE_TRIGGER = 3
+    MODE_HARDWARE_START_TRIGGER = 4
 
 
     def __init__(self, *args, **kwargs):
@@ -137,6 +138,8 @@ class Camera(object):
         """
 
         self.active = True  # Should the camera write its metadata?
+
+        self._saturation_threshold = (2**16) - 1 # default saturation threshold, if not provided in noise_properties
 
         # Register as a provider of metadata (record camera settings)
         # this is important so that the camera settings get recorded
@@ -599,25 +602,58 @@ class Camera(object):
         Returns
         -------
         int
-            One of self.MODE_CONTINUOUS, self.MODE_SINGLE_SHOT
+            One of: 
+                MODE_CONTINUOUS
+                    camera is free-running using internal timing
+                MODE_SINGLE_SHOT
+                    captures single frame on acquisition start
+                MODE_SOFTWARE_TRIGGER
+                    captures a single frame every time a software trigger is
+                    sent. See `FireSoftwareTrigger`
+                MODE_HARDWARE_TRIGGER
+                    captures a single frame every time an external hardware
+                    trigger is received by the camera
+                MODE_HARDWARE_START_TRIGGER
+                    camera waits for an external hardware trigger and enters 
+                    free-running internal timing mode once received
 
         See Also
         --------
         SetAcquisitionMode
+        
+        Notes
+        -----
+        Calling code should compare against the constants defined on the Camera class, rather than their integer values
+        
         """
         raise NotImplementedError('Should be implemented in derived class.')
 
     def SetAcquisitionMode(self, mode):
         """
-        Set the readout mode of the Camera object. PYME currently supports two
-        modes: single shot, where the camera takes one image, and then a new
+        Set the readout mode of the Camera object. PYME currently supports
+        several modes; different options can be useful for timing. The primary
+        modes are single shot, where the camera takes one image, and then a new
         exposure has to be manually triggered, or continuous / free running,
-        where the camera runs as fast as it can until we tell it to stop.
+        where the camera runs as fast as it can until we tell it to stop. Not all cameras support all modes. All cameras should support `MODE_CONTINUOUS` and `MODE_SINGLE_SHOT`, but care should be taken when using the other modes (i.e. usage probably need to be restricted to code which knows what type of camera it's dealing with). TODO - add a mechanism for cameras to report which modes they support.
+
 
         Parameters
         ----------
         mode : int
-            One of self.MODE_CONTINUOUS, self.MODE_SINGLE_SHOT
+            One of:
+                MODE_CONTINUOUS
+                    camera is free-running using internal timing
+                MODE_SINGLE_SHOT
+                    captures single frame on acquisition start
+                MODE_SOFTWARE_TRIGGER
+                    captures a single frame every time a software trigger is
+                    sent. See `FireSoftwareTrigger`
+                MODE_HARDWARE_TRIGGER
+                    captures a single frame every time an external hardware
+                    trigger is received by the camera
+                MODE_HARDWARE_START_TRIGGER
+                    camera waits for an external hardware trigger and enters 
+                    free-running internal timing mode once received
 
         Returns
         -------
@@ -626,6 +662,10 @@ class Camera(object):
         See Also
         --------
         GetAcquisitionMode
+        
+        Notes
+        -----
+        Calling code should use the constants defined on the Camera class, rather than their integer values
         """
 
         raise NotImplementedError('Should be implemented in derived class.')
@@ -713,12 +753,12 @@ class Camera(object):
         'ElectronsPerCount' : AD conversion factor - how many electrons per ADU
         'NoiseFactor' : excess (multiplicative) noise factor 1.44 for EMCCD, 1 for standard CCD/sCMOS. See
             doi: 10.1109/TED.2003.813462
+        'SaturationThreshold' : the full well capacity (in ADU)  
 
         and optionally
 
         'ADOffset' : the dark level (in ADU)
         'DefaultEMGain' : a sensible EM gain setting to use for localization recording
-        'SaturationThreshold' : the full well capacity (in ADU)  
 
 
         These are sourced from config files, referenced by camera serial number and gain mode. 
@@ -818,6 +858,19 @@ class Camera(object):
             mdh.setEntry('Camera.ROIOriginY', y1)
             mdh.setEntry('Camera.ROIWidth', x2 - x1)
             mdh.setEntry('Camera.ROIHeight', y2 - y1)
+    
+    @property
+    def SaturationThreshold(self):
+        """
+        Returns
+        -------
+        int
+            the full well capacity (in ADU), typically 2^bitdepth - 1
+        """
+        try: 
+            return self.noise_properties['SaturationThreshold']
+        except (KeyError, RuntimeError):
+            return self._saturation_threshold
             
 
     def Shutdown(self):

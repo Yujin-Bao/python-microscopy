@@ -22,11 +22,10 @@
 
 import wx
 
-#from PYME.Acquire.mytimer import mytimer
-# import pylab
 import matplotlib.pyplot as plt
 from scipy import ndimage
 import numpy as np
+from PYME.ui import selection
 
 from PYME.DSView.dsviewer import ViewIm3D, ImageStack
 
@@ -44,7 +43,7 @@ class ProfilePlotter(Plugin):
         
     
     def OnProfile(self, event=None):
-        if (self.do.selectionMode == self.do.SELECTION_SQUIGGLE):
+        if (self.do.selection.mode == selection.SELECTION_SQUIGGLE):
             self.OnPlotWavyProfile(event)
         else:
             self.OnPlotProfile(event)
@@ -54,7 +53,7 @@ class ProfilePlotter(Plugin):
         
         lx, ly, hx, hy = self.do.GetSliceSelection()
     
-        w = int(self.do.selectionWidth)
+        w = int(self.do.selection.width)
     
         try:
             names = self.image.mdh.getEntry('ChannelNames')
@@ -111,7 +110,7 @@ class ProfilePlotter(Plugin):
     def _OnPlotProfile(self, event=None):
         lx, ly, hx, hy = self.do.GetSliceSelection()
 
-        w = int(np.floor(0.5*self.do.selectionWidth))
+        w = int(np.floor(0.5*self.do.selection.width))
 
         try:
             names = self.image.mdh.getEntry('ChannelNames')
@@ -294,9 +293,9 @@ class ProfilePlotter(Plugin):
 
     def OnPlotWavyProfile(self, event=None):
         #lx, ly, hx, hy = self.do.GetSliceSelection()
-        pts = np.array(self.do.selection_trace)
+        pts = np.array(self.do.selection.trace)
 
-        w = int(np.floor(0.5 * self.do.selectionWidth))
+        w = int(np.floor(0.5 * self.do.selection.width))
 
         try:
             names = self.image.mdh.getEntry('ChannelNames')

@@ -337,6 +337,7 @@ class XYZTCDataSource(BaseDataSource):
         #print(indices)
         #allocate output array
         out = np.zeros([_slice_len(slice(*indices[k])) for k in 'XYZTC'], dtype=self.dtype)
+        #print(indices, out.shape)
         
         for ci, c in enumerate(range(*indices['C'])):
             for ti, t in enumerate(range(*indices['T'])):
@@ -344,6 +345,7 @@ class XYZTCDataSource(BaseDataSource):
                     slice_idx = self._c_stride * c + self._t_stride * t + self._z_stride * z
                     out[:, :, zi, ci, ti] = self.getSlice(slice_idx)[keys[0], keys[1]]
         
+        #print('out.shape:', out.shape, 'to_squeeze:', to_squeeze)
         return out.squeeze(axis=tuple(to_squeeze))
 
 

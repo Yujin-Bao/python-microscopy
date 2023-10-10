@@ -3,9 +3,32 @@ from PYME.contrib import dispatch
 from .base import ModuleBase, OutputModule
 from PYME.recipes import base
 from PYME.IO.image import ImageStack
+import time
 
 import logging
 logger = logging.getLogger(__name__)
+
+
+
+#custom error types
+class RecipeError(Exception):
+    pass
+class RecipeModuleNotFoundError(RecipeError):
+    pass
+
+class RecipeExecutionError(RecipeError):
+    def __init__(self, msg, recipe=None):
+        Exception.__init__(self, msg)
+
+        self.recipe = recipe # keep a reference to the recipe so that handlers can get fancy with formatting if they want to
+
+    #def __getstate__(self):
+    #    
+    #    return {}
+
+    # make this pickle-able even when the recipe isn't (so you see the error when running from bakeshop)
+    def __reduce__(self):
+        return self.__class__, self.args
 
 class Recipe(HasTraits):
     modules = List()
@@ -27,6 +50,8 @@ class Recipe(HasTraits):
         self.failed = False
         
         self._dg_sig = None
+
+        self._exec_times = {} #record module run times ...
     
     def invalidate_data(self):
         if self.execute_on_invalidation:
@@ -172,74 +197,89 @@ class Recipe(HasTraits):
         """
         #remove anything which is downstream from changed inputs
         
-        print('recipe.execute()')
-        #print self.namespace.keys()
-        for k, v in kwargs.items():
-            #print k, v
-            try:
-                if not (self.namespace[k] == v):
-                    #input has changed
-                    print('pruning: ', k)
-                    self.prune_dependencies_from_namespace([k])
-            except KeyError:
-                #key wasn't in namespace previously
-                print('KeyError')
-                pass
-        
-        self.namespace.update(kwargs)
-        
-        exec_order = self.resolveDependencies()
-        
-        #mark all modules which should execute as not having executed
-        for m in exec_order:
-            if isinstance(m, ModuleBase) and not m.outputs_in_namespace(self.namespace):
-                m._success = False
-        
-        for m in exec_order:
-            if isinstance(m, ModuleBase) and not getattr(m, '_success', False):
+        try:
+            logger.debug('recipe.execute()')  
+            #print self.namespace.keys()
+            for k, v in kwargs.items():
+                #print k, v
                 try:
-                    print('Executing %s' % m)
-                    m.check_inputs(self.namespace)
-                    m.execute(self.namespace)
-                    m._last_error = None
-                    m._success = True
-                    if progress_callback:
-                        progress_callback(self, m)
-                except:
-                    import traceback
-                    logger.exception("Error in recipe module: %s" % m)
-                    
-                    #record our error so that we can associate it with a module
-                    m._last_error = traceback.format_exc()
-                    self.failed = True
-                    self._failing_module = m
-                    
-                    # make sure we didn't leave any partial results
-                    logger.debug('removing failed module dependencies')
-                    self.prune_dependencies_from_namespace(m.outputs)
-                    logger.debug('notifying failure')
-                    self.recipe_failed.send_robust(self)
-                    raise
-        
-        if self.failed:
-            # make sure we update the GUI if we've fixed a broken recipe
-            # TODO - make make this a bit lighter weight - we shouldn't need to redraw the whole recipe just to change
-            # the shading of the module caption
-            self.recipe_changed.send_robust(self)
-        
-        self.failed = False
-        self.recipe_executed.send_robust(self)
-        
-        # detect changes in recipe wiring
-        dg_sig = str(self.dependancyGraph())
-        if not self._dg_sig == dg_sig:
-            #print(dg_sig)
-            #print(self._dg_sig)
-            self._dg_sig = dg_sig
-            self.recipe_changed.send_robust(self)
-        
-        if 'output' in self.namespace.keys():
-            return self.namespace['output']
+                    if not (self.namespace[k] == v):
+                        #input has changed
+                        # print('pruning: ', k) # possibly change these into logging/debug messages
+                        self.prune_dependencies_from_namespace([k])
+                except KeyError:
+                    #key wasn't in namespace previously
+                    # print('KeyError')  # possibly change these into logging/debug messages
+                    pass
+            
+            self.namespace.update(kwargs)
+            
+            exec_order = self.resolveDependencies()
+            #logger.debug('exec_order: %s' % exec_order)
+            #logger.debug('.modules: %s' % self.modules)
+            #logger.debug('recipe instance: %s' % self)
+
+            self._last_error = None
+            
+            #mark all modules which should execute as not having executed
+            for m in exec_order:
+                if isinstance(m, ModuleBase) and not m.outputs_in_namespace(self.namespace):
+                    m._success = False
+            
+            for m in exec_order:
+                #if isinstance(m, ModuleBase):
+                #    logger.debug('Checking whether to execute: %s, %s, %s' % (m, m._success, m.outputs_in_namespace(self.namespace)))
+                if isinstance(m, ModuleBase) and not getattr(m, '_success', False):
+                    try:
+                        logger.debug('Executing %s' % m)
+                        ts = time.time()
+                        m.check_inputs(self.namespace)
+                        m.execute(self.namespace)
+                        self._exec_times[base.module_names[m.__class__]] = time.time() - ts
+                        m._last_error = None
+                        m._success = True
+                        if progress_callback:
+                            progress_callback(self, m)
+                    except:
+                        import traceback
+                        logger.exception("Error in recipe module: %s" % m)
+                        
+                        #record our error so that we can associate it with a module
+                        m._last_error = traceback.format_exc()
+                        self.failed = True
+                        self._failing_module = m
+                        self._last_error = m._last_error
+                        
+                        # make sure we didn't leave any partial results
+                        logger.debug('removing failed module dependencies')
+                        self.prune_dependencies_from_namespace(m.outputs)
+                        logger.debug('notifying failure')
+                        self.recipe_failed.send_robust(self)
+                        raise
+            
+            if self.failed:
+                # make sure we update the GUI if we've fixed a broken recipe
+                # TODO - make make this a bit lighter weight - we shouldn't need to redraw the whole recipe just to change
+                # the shading of the module caption
+                self.recipe_changed.send_robust(self)
+            
+            self.failed = False
+            self.recipe_executed.send_robust(self)
+
+            logger.debug('Module timings: %s' % self._exec_times )
+            
+            # detect changes in recipe wiring
+            dg_sig = str(self.dependancyGraph())
+            if not self._dg_sig == dg_sig:
+                #print(dg_sig)
+                #print(self._dg_sig)
+                self._dg_sig = dg_sig
+                self.recipe_changed.send_robust(self)
+            
+            if 'output' in self.namespace.keys():
+                return self.namespace['output']
+        except Exception as e:
+            raise RecipeExecutionError('Recipe execution failed in module %s' % self._failing_module._module_name, self ) from e
     
     @classmethod
     def fromMD(cls, md):
@@ -260,41 +300,53 @@ class Recipe(HasTraits):
         return c
     
     def get_cleaned_module_list(self):
-        l = []
-        for mod in self.modules:
-            #l.append({mod.__class__.__name__: mod.get()})
+        # l = []
+        # for mod in self.modules:
+        #     #l.append({mod.__class__.__name__: mod.get()})
             
-            ct = mod.class_traits()
+        #     ct = mod.class_traits()
             
-            mod_traits_cleaned = {}
-            for k, v in mod.get().items():
-                if not k.startswith('_'): #don't save private data - this is usually used for caching etc ..,
-                    try:
-                        if (not (v == ct[k].default)) or (k.startswith('input')) or (k.startswith('output')):
-                            #don't save defaults
-                            if isinstance(v, dict) and not type(v) == dict:
-                                v = dict(v)
-                            elif isinstance(v, list) and not type(v) == list:
-                                v = list(v)
-                            elif isinstance(v, set) and not type(v) == set:
-                                v = set(v)
+        #     mod_traits_cleaned = {}
+        #     for k, v in mod.get().items():
+        #         if not k.startswith('_'): #don't save private data - this is usually used for caching etc ..,
+        #             try:
+        #                 if (not (v == ct[k].default)) or (k.startswith('input')) or (k.startswith('output')):
+        #                     #don't save defaults
+        #                     if isinstance(v, dict) and not type(v) == dict:
+        #                         v = dict(v)
+        #                     elif isinstance(v, list) and not type(v) == list:
+        #                         v = list(v)
+        #                     elif isinstance(v, set) and not type(v) == set:
+        #                         v = set(v)
                             
-                            mod_traits_cleaned[k] = v
-                    except KeyError:
-                        # for some reason we have a trait that shouldn't be here
-                        pass
+        #                     mod_traits_cleaned[k] = v
+        #             except KeyError:
+        #                 # for some reason we have a trait that shouldn't be here
+        #                 pass
             
-            l.append({base.module_names[mod.__class__]: mod_traits_cleaned})
+        #     l.append({base.module_names[mod.__class__]: mod_traits_cleaned})
         
-        return l
+        # return l
+        return [m.cleaned_dict_repr() for m in self.modules]
+
+    def to_html(self, show_progress=True, show_errors=True):
+        import jinja2
+        import inspect
+        template = inspect.cleandoc('''\
+        {% for mod in modules %}
+        <div {% if mod._last_error %}style="border-style:solid;padding: 10px;border-color: darkred;" {% endif %}>
+        <pre style="font-size: 8pt;color: {% if mod._success %}darkgreen{% elif mod._last_error %}darkred{% else %}black{% endif %};"> {{ mod.toYAML() }} </pre>
+        {% if mod._last_error %}<pre style="font-size: 8pt;color:darkred">{{ mod._last_error}}</pre> {% endif %} 
+        </div>
+        {% endfor %}
+        ''')
+
+        return jinja2.Template(template).render(modules=self.modules, last_error=getattr(self, '_last_error', ''))
     
     def toYAML(self):
         import yaml
-        class MyDumper(yaml.SafeDumper):
-            def represent_mapping(self, tag, value, flow_style=None):
-                return super(MyDumper, self).represent_mapping(tag, value, False)
         
-        return yaml.dump(self.get_cleaned_module_list(), Dumper=MyDumper)
+        return yaml.dump(self.get_cleaned_module_list(), Dumper=base.MyDumper)
     
     def save_yaml(self, uri):
         """
@@ -356,7 +408,10 @@ class Recipe(HasTraits):
             except KeyError:
                 # still support loading old recipes which do not use hierarchical names
                 # also try and support modules which might have moved
-                mod = base._legacy_modules[mn.split('.')[-1]](self, **md)
+                try:
+                    mod = base._legacy_modules[mn.split('.')[-1]](self, **md)
+                except KeyError:
+                    raise RecipeModuleNotFoundError('No recipe module found with name "%s"\nThis could either be caused by a typo in the module name or a missing 3rd party plugin.' % mn) from None # Full traceback is probably unhelpful for people using modules 
             
             mc.append(mod)
         
@@ -638,8 +693,8 @@ class Recipe(HasTraits):
             import tables
             from PYME.IO import h5rFile
             try:
-                with unifiedIO.local_or_temp_filename(filename) as fn, h5rFile.openH5R(fn, mode='r')._h5file as h5f:
-                    self._inject_tables_from_hdf5(key, h5f, fn, extension)
+                with unifiedIO.local_or_temp_filename(filename) as fn, h5rFile.openH5R(fn, mode='r') as h5f:
+                    self._inject_tables_from_hdf5(key, h5f._h5file, fn, extension)
             except tables.exceptions.HDF5ExtError:  # access issue likely due to multiple processes
                 if unifiedIO.is_cluster_uri(filename):
                     # try again, this time forcing access through the dataserver
@@ -664,6 +719,9 @@ class Recipe(HasTraits):
                 else:
                     #not a cluster file, doesn't make sense to retry with cluster. Propagate exception to user.
                     raise
+            except:
+                logger.exception('Error reading HDF file: %s' % filename)
+                raise IOError('Error reading %s' % filename)
         
         elif extension == '.csv':
             logger.error('loading .csv not supported yet')

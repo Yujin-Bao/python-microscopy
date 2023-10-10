@@ -33,6 +33,7 @@ import scipy.misc
 #import subprocess
 
 from PYME.ui import wx_compat
+from PYME.ui import selection
 
 #from PYME.Analysis import thresholding
 
@@ -153,22 +154,22 @@ class ImageViewPanel(wx.Panel):
             hx, hy = self._PixelToScreenCoordinates(hx, hy)
 
 
-            if self.do.selectionMode == DisplayOpts.SELECTION_RECTANGLE:
+            if self.do.selection.mode == selection.SELECTION_RECTANGLE:
                 dc.DrawRectangle(lx,ly, (hx-lx),(hy-ly))
                 
-            elif self.do.selectionMode == DisplayOpts.SELECTION_SQUIGGLE:
-                if len(self.do.selection_trace) > 2:
-                    x, y = numpy.array(self.do.selection_trace).T
+            elif self.do.selection.mode == selection.SELECTION_SQUIGGLE:
+                if len(self.do.selection.trace) > 2:
+                    x, y = numpy.array(self.do.selection.trace).T
                     pts = numpy.vstack(self._PixelToScreenCoordinates(x, y)).T
                     print((pts.shape))
                     dc.DrawSpline(pts)
-            elif self.do.selectionWidth == 1:
+            elif self.do.selection.width == 1:
                 dc.DrawLine(lx,ly, hx,hy)
             else:
                 dx = hx - lx
                 dy = hy - ly
 
-                w = self.do.selectionWidth*sc
+                w = self.do.selection.width*sc
 
                 if dx == 0 and dy == 0: #special case - profile is orthogonal to current plane
                     d_x = 0.5*w
@@ -296,11 +297,11 @@ class ImageViewPanel(wx.Panel):
 
         xp, yp = self._ScreenToPixelCoordinates(event.GetX(), event.GetY())
         
-        self.do.selection_begin_x = int(xp)
-        self.do.selection_begin_y = int(yp)
+        self.do.selection.start.x = int(xp)
+        self.do.selection.start.y = int(yp)
         
-        self.do.selection_trace = []
-        self.do.selection_trace.append((xp, yp))
+        self.do.selection.trace = []
+        self.do.selection.trace.append((xp, yp))
 
     def OnMotion(self, event):
         if event.Dragging() and self.selecting:
@@ -323,24 +324,24 @@ class ImageViewPanel(wx.Panel):
         xp, yp = self._ScreenToPixelCoordinates(event.GetX(), event.GetY())
 
         if not event.ShiftDown():
-            self.do.selection_end_x = int(xp)
-            self.do.selection_end_y = int(yp)
+            self.do.selection.finish.x = int(xp)
+            self.do.selection.finish.y = int(yp)
             
         else: #lock
-            self.do.selection_end_x = int(xp)
-            self.do.selection_end_y = int(yp)
+            self.do.selection.finish.x = int(xp)
+            self.do.selection.finish.y = int(yp)
 
-            dx = abs(self.do.selection_end_x - self.do.selection_begin_x)
-            dy = abs(self.do.selection_end_y - self.do.selection_begin_y)
+            dx = abs(self.do.selection.finish.x - self.do.selection.start.x)
+            dy = abs(self.do.selection.finish.y - self.do.selection.start.y)
 
             if dx > 1.5*dy: #horizontal
-                self.do.selection_end_y = self.do.selection_begin_y
+                self.do.selection.finish.y = self.do.selection.start.y
             elif dy > 1.5*dx: #vertical
-                self.do.selection_end_x = self.do.selection_begin_x
+                self.do.selection.finish.x = self.do.selection.start.x
             else: #diagonal
-                self.do.selection_end_y = self.do.selection_begin_y + dx*numpy.sign(self.do.selection_end_y - self.do.selection_begin_y)
+                self.do.selection.finish.y = self.do.selection.start.y + dx*numpy.sign(self.do.selection.finish.y - self.do.selection.start.y)
                 
-        self.do.selection_trace.append((xp, yp))
+        self.do.selection.trace.append((xp, yp))
 
         self.Refresh()
         self.Update()
@@ -580,7 +581,7 @@ class ColourImageViewPanel(ImageViewPanel):
 #        self.modMenuIds = {}
 #        self.mModules = wx.Menu()
 #        for mn in dsvmods.allmodules:
-#            id = wx.NewId()
+#            id = wx.NewIdRef()
 #            self.mModules.AppendCheckItem(id, mn)
 #            self.modMenuIds[id] = mn
 #            if mn in self.installedModules:
@@ -649,16 +650,16 @@ class ColourImageViewPanel(ImageViewPanel):
 #        # Make a menubar
 #        file_menu = wx.Menu()
 #
-#        #ID_SAVE = wx.NewId()
-#        #ID_CLOSE = wx.NewId()
-#        ID_EXPORT = wx.NewId()
-#        #ID_SAVEALL = wx.NewId()
+#        #ID_SAVE = wx.NewIdRef()
+#        #ID_CLOSE = wx.NewIdRef()
+#        ID_EXPORT = wx.NewIdRef()
+#        #ID_SAVEALL = wx.NewIdRef()
 #
-#        #ID_VIEW_CONSOLE = wx.NewId()
-#        ID_VIEW_BACKGROUND = wx.NewId()
-#        ID_FILTER_GAUSS = wx.NewId()
+#        #ID_VIEW_CONSOLE = wx.NewIdRef()
+#        ID_VIEW_BACKGROUND = wx.NewIdRef()
+#        ID_FILTER_GAUSS = wx.NewIdRef()
 #
-#        #self.ID_VIEW_CMAP_INVERT = wx.NewId()
+#        #self.ID_VIEW_CMAP_INVERT = wx.NewIdRef()
 #
 #        file_menu.Append(wx.ID_SAVE, "&Save")
 #        #file_menu.Append(ID_SAVEALL, "Save &Multi-channel")

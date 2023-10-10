@@ -39,6 +39,7 @@ from PYME.localization import MetaDataEdit as mde
 from PYME.localization import remFitBuf
 from PYME.ui.mytimer import mytimer
 import sys
+import importlib
 
 import logging
 logger = logging.getLogger(__name__)
@@ -165,9 +166,10 @@ class AnalysisSettingsView(object):
             vsizer.Add(pg, 0,wx.BOTTOM|wx.EXPAND, 5)    
         
     def _populateCustomAnalysisPanel(self, pan, vsizer):
+        from PYME.localization.FitFactories import import_fit_factory
         try:
             fitMod = self.fitFactories[self.cFitType.GetSelection()]
-            fm = __import__('PYME.localization.FitFactories.' + fitMod, fromlist=['PYME', 'localization', 'FitFactories'])
+            fm = import_fit_factory(fitMod)
             
             #vsizer = wx.BoxSizer(wx.VERTICAL)
             for param in fm.PARAMETERS:
@@ -593,7 +595,7 @@ class LMAnalyser2(Plugin):
 
         mdh = self.analysisController.analysisMDH
 
-        if not hasattr(self, '_ovl'):
+        if not hasattr(self, '_ovl') or not hasattr(self._ovl, 'filter'):
             from PYME.DSView import overlays
             from PYME.IO import tabular
             filt = tabular.FitResultsSource(self.fitResults)
@@ -814,8 +816,17 @@ class LMAnalyser2(Plugin):
 
     def update(self, dsviewer):
         if 'fitInf' in dir(self) and not self.dsviewer.playbackpanel.playback_running:
+            if self.do.ds.shape[3] > 1:
+                # stack is a time series
+                idx = self.do.tp
+            else:
+                # stack is a formatted as a z-stack - pretend it's a time series
+                # this can occur due to limitations in the backwards compatibility code that guesses
+                # whether a stack is a time series or not
+                idx = self.do.zp
+            
             try:
-                self.fitInf.UpdateDisp(self._ovl.points_hit_test(self.do.xp, self.do.yp, self.do.zp, voxelsize=self.view.voxelsize))
+                self.fitInf.UpdateDisp(self._ovl.points_hit_test(self.do.xp, self.do.yp, idx, voxelsize=self.view.voxelsize))
             except:
                 import traceback
                 print((traceback.format_exc()))
@@ -910,7 +921,12 @@ class LMAnalyser2(Plugin):
             matplotlib.interactive(False)
             plt.figure()
         
-        zp = self.do.zp
+        if self.do.ds.shape[2] > 1:
+            # stack has z
+            zp = self.do.zp
+        else:
+            # stack is a time series
+            zp = self.do.tp
 
         analysisMDH = self.analysisController.analysisMDH
         
@@ -975,8 +991,10 @@ class LMAnalyser2(Plugin):
                 #figure()
                 #imshow()
             except AttributeError:
+                from numbers import Number
                 #d = self.image.data[:,:,zp].squeeze().T
-                if isinstance(ft.bg, np.ndarray):
+                if isinstance(ft.bg, np.ndarray) or isinstance(ft.bg, Number):
+                    # TODO - revisit special cases - should we check for the GPU stuff first and then just duck-type everything else?
                     # We expect our background estimate to take the form of a numpy array, correct our data by subtracting the background
                     d = (ft.data - ft.bg).squeeze().T
                 elif hasattr(ft.bg, 'get_background'):

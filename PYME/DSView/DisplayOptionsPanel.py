@@ -41,6 +41,7 @@ from PYME import resources
 import numpy as np
 #from matplotlib import cm
 from PYME.ui import histLimits
+from PYME.ui import selection
 from .displayOptions import DisplayOpts #, fast_grey, labeled
 
 import os
@@ -96,7 +97,7 @@ class OptionsPanel(wx.Panel):
                 ssizer = wx.BoxSizer(wx.VERTICAL)
                 p = pane
 
-            id = wx.NewId()
+            id = wx.NewIdRef()
             self.hIds.append(id)
             
             c = hd[i]
@@ -110,7 +111,7 @@ class OptionsPanel(wx.Panel):
             
             hsizer2 = wx.BoxSizer(wx.HORIZONTAL)
 
-            id = wx.NewId()
+            id = wx.NewIdRef()
             self.cIds.append(id)
             cCmap = wx.Choice(p, id, choices=cmapnames, size=(80, -1))
             cCmap.SetSelection(cmapnames.index(self.do.cmaps[i].name))
@@ -118,7 +119,7 @@ class OptionsPanel(wx.Panel):
             hsizer2.Add(cCmap, 1, wx.ALL|wx.ALIGN_CENTER_VERTICAL, 2)
             
             if horizOrientation:
-                id = wx.NewId()
+                id = wx.NewIdRef()
                 self.shIds.append(id)            
                 cbShow = wx.CheckBox(p, id)
                 cbShow.SetValue(self.do.show[i])
@@ -142,6 +143,7 @@ class OptionsPanel(wx.Panel):
             pan_opt = wx.Panel(fpan_opt, -1)
 
         self.bOptimise = wx.Button(pan_opt, -1, "Stretch", style=wx.BU_EXACTFIT)
+        self.bOptimise.SetToolTip('Rescale image (min->99th percentile). Shift-click for more options')
 
         self.cbScale = wx.Choice(pan_opt, -1, choices=["1:16", "1:8", "1:4", "1:2", "1:1", "2:1", "4:1", "8:1", "16:1"])
         self.cbScale.SetSelection(4)
@@ -260,7 +262,27 @@ class OptionsPanel(wx.Panel):
         #self.SetVirtualSize(-1, _h)
 
     def OnOptimise(self, event):
-        self.do.Optimise()
+        if wx.GetKeyState(wx.WXK_SHIFT):
+            if not hasattr(self, '_optim_minmax_id'):
+                #self._popupid = wx.NewIdRef()
+                self._optim_percentile_id = wx.NewIdRef()
+                self._optim_minmax_id = wx.NewIdRef()
+
+                self.Bind(wx.EVT_MENU, lambda e: self._optimise('percentile'), id=self._optim_percentile_id)
+                self.Bind(wx.EVT_MENU, lambda e: self._optimise('min-max'), id=self._optim_minmax_id)
+
+            menu = wx.Menu()
+            menu.Append(self._optim_percentile_id, 'Percentile (0->99th)')
+            menu.Append(self._optim_minmax_id, 'Min->max')
+
+            self.PopupMenu(menu)
+            menu.Destroy()
+        else:
+            self._optimise()
+
+        
+    def _optimise(self, method='percentile'):
+        self.do.Optimise(method=method)
         self.RefreshHists()
 
     #constants for slice selection
@@ -376,11 +398,11 @@ class OptionsPanel(wx.Panel):
         self.toolB = aui.AuiToolBar(wind, -1, wx.DefaultPosition, wx.DefaultSize, agwStyle=aui.AUI_TB_DEFAULT_STYLE | aui.AUI_TB_OVERFLOW | aui.AUI_TB_VERTICAL)
         self.toolB.SetToolBitmapSize(wx.Size(16, 16))
 
-        ID_SELECT_OBJECT = wx.NewId()
-        ID_CROSSHAIRS = wx.NewId()
-        ID_RECTSELECT = wx.NewId()
-        ID_LINESELECT = wx.NewId()
-        ID_SQUIGGLESELECT = wx.NewId()
+        ID_SELECT_OBJECT = wx.NewIdRef()
+        ID_CROSSHAIRS = wx.NewIdRef()
+        ID_RECTSELECT = wx.NewIdRef()
+        ID_LINESELECT = wx.NewIdRef()
+        ID_SQUIGGLESELECT = wx.NewIdRef()
 
         self.toolB.AddRadioTool(ID_CROSSHAIRS, "Set position", bmCrosshairs, bmCrosshairs)
         self.toolB.AddRadioTool(ID_SELECT_OBJECT, "Object selection", bmObjectSelect, bmObjectSelect)
@@ -406,7 +428,7 @@ class OptionsPanel(wx.Panel):
 
     def OnSelectObject(self, event):
         self.do.leftButtonAction = DisplayOpts.ACTION_SELECT_OBJECT
-        self.do.selectionMode = DisplayOpts.SELECTION_RECTANGLE
+        self.do.selection.mode = selection.SELECTION_RECTANGLE
         self.do.showSelection = False
 
         #self.Refresh()
@@ -414,7 +436,7 @@ class OptionsPanel(wx.Panel):
     
     def OnSelectCrosshairs(self, event):
         self.do.leftButtonAction = DisplayOpts.ACTION_POSITION
-        self.do.selectionMode = DisplayOpts.SELECTION_RECTANGLE
+        self.do.selection.mode = selection.SELECTION_RECTANGLE
         self.do.showSelection = False
 
         #self.Refresh()
@@ -422,7 +444,7 @@ class OptionsPanel(wx.Panel):
 
     def OnSelectRectangle(self, event):
         self.do.leftButtonAction = DisplayOpts.ACTION_SELECTION
-        self.do.selectionMode = DisplayOpts.SELECTION_RECTANGLE
+        self.do.selection.mode = selection.SELECTION_RECTANGLE
         self.do.showSelection = True
 
         #self.Refresh()
@@ -430,7 +452,7 @@ class OptionsPanel(wx.Panel):
 
     def OnSelectLine(self, event):
         self.do.leftButtonAction = DisplayOpts.ACTION_SELECTION
-        self.do.selectionMode = DisplayOpts.SELECTION_LINE
+        self.do.selection.mode = selection.SELECTION_LINE
         self.do.showSelection = True
 
         #self.Refresh()
@@ -438,7 +460,7 @@ class OptionsPanel(wx.Panel):
         
     def OnSelectSquiggle(self, event):
         self.do.leftButtonAction = DisplayOpts.ACTION_SELECTION
-        self.do.selectionMode = DisplayOpts.SELECTION_SQUIGGLE
+        self.do.selection.mode = selection.SELECTION_SQUIGGLE
         self.do.showSelection = True
 
         #self.Refresh()
@@ -460,10 +482,10 @@ class OptionsPanel(wx.Panel):
 
     def OnLineThickness(self, event):
         print('foo')
-        dlg = wx.TextEntryDialog(self, 'Line Thickness', 'Set width of line selection', '%d' % self.do.selectionWidth)
+        dlg = wx.TextEntryDialog(self, 'Line Thickness', 'Set width of line selection', '%d' % self.do.selection.width)
 
         if dlg.ShowModal() == wx.ID_OK:
-            self.do.selectionWidth = int(dlg.GetValue())
+            self.do.selection.width = int(dlg.GetValue())
 
         dlg.Destroy()
 

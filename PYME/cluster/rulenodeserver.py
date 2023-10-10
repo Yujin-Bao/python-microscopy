@@ -18,6 +18,8 @@ import os
 
 from PYME.util import webframework
 
+from PYME.cluster import distribution
+
 import ujson as json
 
 WORKER_GET_TIMEOUT = config.get('nodeserver-worker-get-timeout', 60)
@@ -92,8 +94,12 @@ class Rater(object):
                         cost = .01
         
             elif task['type'] == 'recipe':
-                for URL in task['inputs'].values():
-                    if os.path.exists(URL):
+                for key, URL in task['inputs'].items():
+                    if key == '__sim':
+                        #special case for no-input simulation tasks
+                        # NB - only needed to suppress error, simulation tasks just get cost=1 otherwise.
+                        cost *= 0.2
+                    elif os.path.exists(URL):
                         #cluster of one special case
                         cost *= .2
                     elif clusterIO.is_local(*clusterIO.parseURL(URL)):
@@ -132,12 +138,19 @@ class Rater(object):
         
 
 class NodeServer(object):
-    def __init__(self, distributor, ip_address, port, nodeID=computerName.GetComputerName()):
+    def __init__(self, distributor_or_ns, ip_address, port, nodeID=computerName.GetComputerName()):
         self._tasks = Queue.Queue()
         self._handins = Queue.Queue()
 
         self.nodeID = nodeID
-        self.distributor_url = distributor
+
+        if isinstance(distributor_or_ns, str):
+            self._distributor_url = distributor_or_ns
+        else:
+            # got a nameserver instance - use that instead
+            self._ns = distributor_or_ns
+            self._distributor_url = None
+
         self.ip_address = ip_address
         self.port = port
 
@@ -156,6 +169,7 @@ class NodeServer(object):
 
         #set up threads to poll the distributor and announce ourselves and get and return tasks
         self.handinSession = requests.Session()
+        self.handinSession.trust_env = False
         self.pollThread = threading.Thread(target=self._poll)
         self.pollThread.start()
 
@@ -165,9 +179,25 @@ class NodeServer(object):
 
         logger.debug('Starting to poll for tasks')
         self.taskSession = requests.Session()
+        self.taskSession.trust_env = False
         self.taskThread = threading.Thread(target=self._poll_tasks)
         self.taskThread.start()
 
+    @property
+    def distributor_url(self):
+        if self._distributor_url is None:
+            # try and find a distributor
+            #distributors = [u.lstrip('http://').rstrip('/') for u in distribution.getDistributorInfo(self._ns).values()]
+            distributors = list(distribution.getDistributorInfo(self._ns).values())
+            print(distributors)
+
+            if len(distributors) == 0:
+                logger.debug('No distributor found')
+                return None
+            else:
+                self._distributor_url = distributors[0]
+                
+        return self._distributor_url
 
 
     @property
@@ -191,6 +221,7 @@ class NodeServer(object):
 
             if self.taskSession is None:
                 self.taskSession = requests.Session()
+                self.taskSession.trust_env = False
 
             
             try:
@@ -288,6 +319,10 @@ class NodeServer(object):
                     logger.error('Error getting tasks: Could not connect to distributor')
                     
                 return
+
+            except:
+                logger.exception('Error getting tasks')
+                print(url, r)
                 
 
     def _do_handins(self):
@@ -296,6 +331,7 @@ class NodeServer(object):
 
         if self.handinSession is None:
             self.handinSession = requests.Session()
+            self.handinSession.trust_env = False
 
         try:
             while True:
@@ -341,14 +377,16 @@ class NodeServer(object):
 
     def _poll(self):
         while self._do_poll:
-            #self._announce()
-            self._do_handins()
-            #self._update_tasks()
+            if self._distributor_url is not None:
+                #self._announce()
+                self._do_handins()
+                #self._update_tasks()
             time.sleep(.5)
 
     def _poll_tasks(self):
         while self._do_poll:
-            self._update_tasks()
+            if self._distributor_url is not None:
+                self._update_tasks()
             time.sleep(1.0)
 
 
@@ -404,9 +442,9 @@ class WFNodeServer(webframework.APIHTTPServer, NodeServer):
 
 
 class ServerThread(threading.Thread):
-    def __init__(self, distributor, port, externalAddr=None, profile=False):
+    def __init__(self, distributor_or_ns, port, externalAddr=None, profile=False):
         self.port = int(port)
-        self.distributor = distributor
+        #self.distributor = distributor
         self._profile = profile
         
         if externalAddr is None:
@@ -414,7 +452,10 @@ class ServerThread(threading.Thread):
             externalAddr = socket.gethostbyname(socket.gethostname())
             
         self.externalAddr = externalAddr
-        self.nodeserver = WFNodeServer('http://' + self.distributor + '/', port=self.port, ip_address=self.externalAddr)
+
+        if isinstance(distributor_or_ns, str):
+            distributor_or_ns = 'http://' + distributor_or_ns + '/'
+        self.nodeserver = WFNodeServer(distributor_or_ns, port=self.port, ip_address=self.externalAddr)
         
         threading.Thread.__init__(self)
     

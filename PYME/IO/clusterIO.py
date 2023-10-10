@@ -90,10 +90,12 @@ import numpy as np
 import threading
 from PYME.IO import unifiedIO
 
-if six.PY2:
-    import httplib # type: ignore
-else:
+
+try:    
     import http.client as httplib
+except ImportError:
+    #py2
+    import httplib # type: ignore
 
 import socket
 import os
@@ -172,6 +174,7 @@ def _getSession(url):
         session = sessions[servinfo]
     except KeyError:
         session = requests.Session()
+        session.trust_env = False
         sessions[servinfo] = session
 
     return session

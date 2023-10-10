@@ -69,6 +69,14 @@ else:
 import requests
 import sys
 import signal
+import yaml
+
+def str_presenter(dumper, data):
+  if len(data.splitlines()) > 1:  # check for multiline string
+    return dumper.represent_scalar('tag:yaml.org,2002:str', data, style='|')
+  return dumper.represent_scalar('tag:yaml.org,2002:str', data)
+
+yaml.add_representer(str, str_presenter)
 #import socket
 
 from PYME.localization import remFitBuf
@@ -97,21 +105,100 @@ Traceback:
 ----------
 {traceback}
 
-
 '''
-    def __init__(self, taskDescr, traceback):
+    html_error_template = '''
+<h5>Error in rule: {rule_id} running task: {task_id} on {comp_name}:{pid}</h5>
+
+<h6>taskDescr:</h6>
+<pre style="text-size:8pt;">{taskDescr}</pre>
+
+<h6>Traceback:</h6>
+<pre style="text-size:8pt;">{traceback}</pre>
+
+<hrule>
+'''
+
+    def __init__(self, taskDescr, traceback, exception=None):
         self.taskDescr = taskDescr
         self.traceback = traceback
+        self.exception = exception
         
     @property
     def log_url(self):
         rule_id = self.taskDescr['id'].split('~')[0]
         return 'PYME-CLUSTER://%s/__aggregate_txt/LOGS/rules/%s.log' % (clusterIO.local_serverfilter, rule_id)
+
+    @property
+    def html_log_url(self):
+        rule_id = self.taskDescr['id'].split('~')[0]
+        return 'PYME-CLUSTER://%s/__aggregate_txt/LOGS/rules/%s.html' % (clusterIO.local_serverfilter, rule_id)
         
-    def to_string(self):
+    def format_taskDesc(self):
+        return yaml.dump(self.taskDescr)
+
+    def extra_template_kwargs(self, mode='txt'):
+        """ Over-ride in derived classes to provide extra info to templates"""
+        return {}
+    
+    def to_string(self, mode='txt'):
         rule_id, task_id = self.taskDescr['id'].split('~')
-        return self.template.format(rule_id = rule_id, task_id = task_id, comp_name = compName, pid=os.getpid(),
-                                    taskDescr= str(self.taskDescr), traceback = self.traceback)
+
+        if mode == 'html':
+            template = self.html_error_template
+        else:
+            template = self.template
+        
+        return template.format(rule_id = rule_id, task_id = task_id, comp_name = compName, pid=os.getpid(),
+                                    taskDescr= self.format_taskDesc(), traceback = self.traceback, **self.extra_template_kwargs(mode=mode))
+
+class RecipeTaskError(TaskError):
+    template = '''===========================================================================
+Error in rule: {rule_id} running task: {task_id} on {comp_name}:{pid}
+
+taskDescr:
+----------
+{taskDescr}
+
+Recipe:
+-------
+{recipe}
+
+Traceback:
+----------
+{traceback}
+
+'''
+    html_error_template = '''
+<h5>Error in rule: {rule_id} running task: {task_id} on {comp_name}:{pid}</h5>
+
+<h6>taskDescr:</h6>
+<pre style="font-size: 8pt;">{taskDescr}</pre>
+
+<h6>Recipe:</h6>
+{recipe}
+
+<h6>Traceback:</h6>
+<pre style="font-size: 8pt;color: darkred;">{traceback}</pre>
+
+<hrule>
+'''
+    def format_taskDesc(self):
+        import copy
+        # copy description, as we are going to override the recipe entry
+        desc = copy.deepcopy(self.taskDescr)
+        if 'recipe' in desc['taskdef']:
+            desc['taskdef']['recipe'] = 'see below ...'
+        
+        return yaml.dump(desc)
+
+    def extra_template_kwargs(self, mode='text'):
+        from PYME.recipes.recipe import RecipeExecutionError
+        if (mode == 'html'):
+            if isinstance(self.exception, RecipeExecutionError) and self.exception.recipe:
+                return {'recipe' : self.exception.recipe.to_html()}
+            else:
+                return {'recipe': '<pre style="font-size: 8pt;">%s</pre>' % self.taskDescr['taskdef'].get('recipe', 'see taskdef.recipeURI')}
+        return {'recipe': self.taskDescr['taskdef'].get('recipe', 'see taskdef.recipeURI')}
         
 
 class taskWorker(object):
@@ -165,7 +252,8 @@ class taskWorker(object):
 
             if isinstance(res, TaskError):
                 # failure
-                clusterResults.fileResults(res.log_url, res.to_string())
+                clusterResults.fileResults(res.log_url, res.to_string().encode())
+                clusterResults.fileResults(res.html_log_url, res.to_string(mode='html').encode())
                 
                 s = clusterIO._getSession(queueURL)
                 r = s.post(queueURL + 'node/handin?taskID=%s&status=failure' % taskDescr['id'])
@@ -245,6 +333,7 @@ class taskWorker(object):
             logger.exception(traceback.format_exc())
 
         if len(tasks) != 0:
+            #logger.debug('Got %d tasks' % len(tasks))
             for t in tasks:
                 self.inputQueue.put(t)
             return True
@@ -268,6 +357,7 @@ class taskWorker(object):
             # if our queue for computing is empty, try to get more tasks
             if self.inputQueue.empty():
                 # if we don't have any new tasks, sleep to avoid constant polling
+                #logger.debug('tasksLoop-_get_tasks()')
                 if not self._get_tasks():
                     # no queues had tasks
                     time.sleep(0.1)
@@ -286,6 +376,7 @@ class taskWorker(object):
         while True:
             # turn in completed tasks
             try:
+                #logger.debug('returnLoop - _return')
                 self._return_task_results()
             except:
                 import traceback
@@ -302,7 +393,9 @@ class taskWorker(object):
             #loop over tasks - we pop each task and then delete it after processing
             #to keep memory usage down
 
+            #logger.debug('computeLoop-inputQueue.get()')
             queueURL, taskDescr = self.inputQueue.get()
+            #logger.debug('computeLoop-%s' %taskDescr)
             if taskDescr['type'] == 'localization':
                 try:
                     task = remFitBuf.createFitTaskFromTaskDef(taskDescr)
@@ -332,18 +425,24 @@ class taskWorker(object):
 
                     recipe = Recipe.fromYAML(recipe_yaml)
 
+                    #initial context
+                    context = {'data_root' : clusterIO.local_dataroot,
+                               'task_id' : taskDescr['id'].split('~')[0]}
+                    
                     #load recipe inputs
                     logging.debug(taskDescr)
                     for key, url in taskDescr['inputs'].items():
-                        logging.debug('RECIPE: loading %s as %s' % (url, key))
-                        recipe.loadInput(url, key)
+                        if key == '__sim':
+                            # special case for no-input simulation recipes
+                            # for now, essentially ignore `__sim` inputs, but propagate into context just in case
+                            # TODO?? find a way of encoding simulation parameters?
+                            context['sim_tag'] = url
+                        else:    
+                            logging.debug('RECIPE: loading %s as %s' % (url, key))
+                            recipe.loadInput(url, key)
 
                     #print recipe.namespace
                     recipe.execute()
-
-                    #save results
-                    context = {'data_root' : clusterIO.local_dataroot,
-                               'task_id' : taskDescr['id'].split('~')[0]}
 
                     #update context with file stub and input directory
                     try:
@@ -377,12 +476,12 @@ class taskWorker(object):
 
                     self.resultsQueue.put((queueURL, taskDescr, True))
 
-                except Exception:
+                except Exception as e:
                     import traceback
                     traceback.print_exc()
                     tb = traceback.format_exc()
                     logger.exception(tb)
-                    self.resultsQueue.put((queueURL, taskDescr, TaskError(taskDescr, tb)))
+                    self.resultsQueue.put((queueURL, taskDescr, RecipeTaskError(taskDescr, tb, e)))
 
         
 def on_SIGHUP(signum, frame):
